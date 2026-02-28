@@ -1,0 +1,284 @@
+---
+title: Installation
+description: Install RiftRelay using Docker, Docker Compose, or from source
+---
+
+RiftRelay can be installed in several ways depending on your needs. Choose the method that best fits your environment.
+
+## Docker (recommended)
+
+The easiest way to run RiftRelay is using Docker with the automated setup script:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/renja-g/RiftRelay/main/scripts/setup-docker-stack.sh" | bash
+```
+
+This downloads the necessary files, prompts for your Riot API token, and starts RiftRelay.
+
+### Manual Docker run
+
+If you prefer to run Docker manually:
+
+```bash
+docker pull renjag/riftrelay:latest
+
+docker run -d \
+  --name riftrelay \
+  -p 8985:8985 \
+  -e RIOT_TOKEN="your-riot-token" \
+  --restart unless-stopped \
+  renjag/riftrelay:latest
+```
+
+<Note>
+  Replace `your-riot-token` with your actual Riot API token from the [Riot Developer Portal](https://developer.riotgames.com/)
+</Note>
+
+## Docker Compose
+
+For production deployments or if you need more control, use Docker Compose.
+
+<Steps>
+  <Step title="Create docker-compose.yml">
+    Create a `docker-compose.yml` file with the following content:
+
+    ```yaml docker-compose.yml
+    name: riftrelay
+
+    services:
+      riftrelay:
+        image: renjag/riftrelay:latest
+        restart: unless-stopped
+        init: true
+        env_file:
+          - .env
+        environment:
+          PORT: "8985"
+        ports:
+          - "8985:8985"
+        healthcheck:
+          test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8985/healthz || exit 1"]
+          interval: 15s
+          timeout: 3s
+          retries: 3
+          start_period: 20s
+        read_only: true
+        tmpfs:
+          - /tmp:size=64m,mode=1777
+        cap_drop:
+          - ALL
+        security_opt:
+          - no-new-privileges:true
+        stop_grace_period: 25s
+    ```
+
+    <Info>
+      This configuration includes security hardening with read-only filesystem, dropped capabilities, and health checks
+    </Info>
+  </Step>
+
+  <Step title="Create .env file">
+    Create a `.env` file in the same directory:
+
+    ```bash .env
+    # Required: Riot token (comma separated for multiple tokens)
+    RIOT_TOKEN=your-riot-token
+
+    # Optional: RiftRelay image to pull/run in docker compose
+    RIFTRELAY_IMAGE=renjag/riftrelay:latest
+
+    # Optional overrides
+    PORT=8985
+    ENABLE_METRICS=false
+    ENABLE_PPROF=false
+    ENABLE_SWAGGER=true
+    SHUTDOWN_TIMEOUT=20s
+    ```
+
+    <Warning>
+      Never commit your `.env` file with real API tokens to version control. Add it to `.gitignore`
+    </Warning>
+  </Step>
+
+  <Step title="Start the service">
+    Start RiftRelay using Docker Compose:
+
+    ```bash
+    docker compose up -d
+    ```
+
+    Check the logs to verify it started successfully:
+
+    ```bash
+    docker compose logs -f riftrelay
+    ```
+  </Step>
+
+  <Step title="Verify it's running">
+    Test the health endpoint:
+
+    ```bash
+    curl http://localhost:8985/healthz
+    ```
+  </Step>
+</Steps>
+
+## From source
+
+If you want to run RiftRelay from source or contribute to development:
+
+<Steps>
+  <Step title="Prerequisites">
+    Ensure you have Go 1.26.0 or later installed:
+
+    ```bash
+    go version
+    ```
+  </Step>
+
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/renja-g/RiftRelay.git
+    cd RiftRelay
+    ```
+  </Step>
+
+  <Step title="Set environment variables">
+    Export your Riot API token:
+
+    ```bash
+    export RIOT_TOKEN="your-riot-token"
+    ```
+
+    Optionally, configure other settings:
+
+    ```bash
+    export PORT=8985
+    export ENABLE_SWAGGER=true
+    export QUEUE_CAPACITY=2048
+    ```
+  </Step>
+
+  <Step title="Run the server">
+    Start RiftRelay:
+
+    ```bash
+    go run .
+    ```
+
+    The server starts on `http://localhost:8985` by default.
+  </Step>
+
+  <Step title="Build a binary (optional)">
+    To create a production binary:
+
+    ```bash
+    go build -o riftrelay .
+    ./riftrelay
+    ```
+  </Step>
+</Steps>
+
+## Environment variables
+
+RiftRelay is configured entirely through environment variables. The only required variable is `RIOT_TOKEN`.
+
+### Required
+
+| Variable | Description | Example |
+|----------|-------------|----------|
+| `RIOT_TOKEN` | Your Riot API token(s) | `RGAPI-xxxxx` or `token1,token2,token3` |
+
+### Common settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8985` | Server port |
+| `QUEUE_CAPACITY` | `2048` | Maximum queued requests |
+| `ADMISSION_TIMEOUT` | `5m` | Max wait time in queue |
+| `SHUTDOWN_TIMEOUT` | `20s` | Graceful shutdown timeout |
+| `ENABLE_METRICS` | `false` | Enable `/metrics` endpoint |
+| `ENABLE_PPROF` | `false` | Enable pprof endpoints |
+| `ENABLE_SWAGGER` | `true` | Enable Swagger UI at `/swagger/` |
+
+<Tip>
+  For a complete list of available configuration options, see the [Configuration](/guides/configuration) page or check `.env.example` in the repository
+</Tip>
+
+## Multiple tokens
+
+To increase your rate limits, you can provide multiple Riot API tokens as comma-separated values:
+
+```bash
+RIOT_TOKEN=token1,token2,token3
+```
+
+Or in your `.env` file:
+
+```bash .env
+RIOT_TOKEN=RGAPI-xxxxx,RGAPI-yyyyy,RGAPI-zzzzz
+```
+
+RiftRelay will automatically rotate between tokens to maximize throughput.
+
+## Port configuration
+
+By default, RiftRelay runs on port `8985`. To change this:
+
+**With Docker:**
+```bash
+docker run -d \
+  -p 3000:3000 \
+  -e PORT=3000 \
+  -e RIOT_TOKEN="your-token" \
+  renjag/riftrelay:latest
+```
+
+**With environment variable:**
+```bash
+export PORT=3000
+go run .
+```
+
+**In .env file:**
+```bash
+PORT=3000
+```
+
+## Verify installation
+
+After installation, verify RiftRelay is working correctly:
+
+<CodeGroup>
+```bash Health check
+curl http://localhost:8985/healthz
+# Expected: 200 OK
+```
+
+```bash Test request
+curl "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+# Expected: JSON response with account data or appropriate error
+```
+
+```bash Swagger UI
+# Open in browser:
+http://localhost:8985/swagger/
+```
+</CodeGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart guide" icon="rocket" href="/quickstart">
+    Learn how to make your first requests through RiftRelay
+  </Card>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Explore advanced configuration options and tuning
+  </Card>
+  <Card title="API reference" icon="code" href="/api/proxy-endpoint">
+    View all available endpoints and headers
+  </Card>
+  <Card title="Metrics" icon="chart-line" href="/api/metrics">
+    Set up Prometheus metrics for production monitoring
+  </Card>
+</CardGroup>

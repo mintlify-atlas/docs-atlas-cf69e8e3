@@ -1,0 +1,206 @@
+---
+title: Architecture Overview
+description: High-level architecture and design of RiftRelay
+---
+
+RiftRelay is a sophisticated rate-limiting proxy for the Riot Games API built in Go. It intelligently manages API rate limits to prevent throttling while maximizing throughput.
+
+## Request Flow
+
+Every request through RiftRelay follows this path:
+
+```
+1. Client Request → RiftRelay
+   ↓
+2. Router (path parsing & validation)
+   ↓
+3. Admission Control (queue & rate limiting)
+   ↓
+4. Proxy (forward to Riot API)
+   ↓
+5. Response Observation (update rate limit state)
+   ↓
+6. Response → Client
+```
+
+<Steps>
+  <Step title="Path Validation">
+    The router parses incoming requests in the format `/{region}/{riot-api-path}` and validates the region and upstream path (internal/router/path.go:35).
+  </Step>
+  
+  <Step title="Admission Control">
+    Requests are queued by bucket and wait for admission based on available rate limit capacity (internal/limiter/limiter.go:43).
+  </Step>
+  
+  <Step title="Proxying">
+    Once admitted, the reverse proxy forwards the request to the Riot API with the appropriate API token (internal/proxy/proxy.go:113).
+  </Step>
+  
+  <Step title="Observation">
+    Response headers are parsed to update internal rate limit state for future requests (internal/limiter/limiter.go:185).
+  </Step>
+</Steps>
+
+## Project Structure
+
+RiftRelay is organized into focused packages with clear responsibilities:
+
+<CardGroup cols={2}>
+  <Card title="main.go" icon="door-open">
+    Entry point with signal handling for graceful shutdown
+  </Card>
+  
+  <Card title="internal/app" icon="server">
+    Server lifecycle, HTTP routing, and middleware setup
+  </Card>
+  
+  <Card title="internal/config" icon="gear">
+    Environment-based configuration loading and validation
+  </Card>
+  
+  <Card title="internal/router" icon="route">
+    Path parsing, validation, and bucket key generation
+  </Card>
+  
+  <Card title="internal/limiter" icon="gauge">
+    Core admission control, queueing, and rate limit tracking
+  </Card>
+  
+  <Card title="internal/proxy" icon="arrow-right-arrow-left">
+    Reverse proxy implementation and admission middleware
+  </Card>
+  
+  <Card title="internal/transport" icon="network-wired">
+    HTTP transport configuration and retry logic
+  </Card>
+  
+  <Card title="internal/metrics" icon="chart-line">
+    Prometheus metrics collection (optional)
+  </Card>
+</CardGroup>
+
+## Component Interaction
+
+Here's how the major components work together:
+
+### 1. Server Initialization (internal/app/server.go:24)
+
+When RiftRelay starts:
+
+```go
+// Configuration is loaded from environment
+cfg := config.Load()
+
+// Limiter is created with queue capacity and API key count
+limiter := limiter.New(limiter.Config{
+    KeyCount:         len(cfg.Tokens),
+    QueueCapacity:    cfg.QueueCapacity,
+    AdditionalWindow: cfg.AdditionalWindow,
+})
+
+// Proxy handler is created with limiter
+handler := proxy.New(cfg, proxy.WithLimiter(limiter))
+```
+
+### 2. Request Processing (internal/proxy/admission.go:34)
+
+Each incoming request:
+
+1. **Router** parses the path and extracts region + bucket
+2. **Admission middleware** requests admission from the limiter
+3. **Limiter** queues the request and schedules it based on rate limits
+4. **Proxy** forwards the request with the appropriate API key
+5. **ModifyResponse** observes rate limit headers from the response
+
+### 3. Rate Limit State Management (internal/limiter/state.go:82)
+
+The limiter maintains:
+
+- **Per-key state**: Separate tracking for each API token
+- **Per-region app limits**: Application-level rate limits by region
+- **Per-bucket method limits**: Method-level rate limits by endpoint pattern
+- **Pacing state**: Last granted time to spread requests evenly
+
+## Key Design Decisions
+
+<AccordionGroup>
+  <Accordion title="Why spreading instead of bursting?">
+    Instead of sending all requests immediately when rate limits reset, RiftRelay spreads them evenly across the window. This prevents sudden load spikes on Riot's API and reduces the chance of hitting secondary rate limits.
+    
+    The pacing algorithm calculates the next available slot:
+    ```go
+    nextSlot := lastGranted + (resetAt - lastGranted) / (requestsLeft + 1)
+    ```
+    
+    See internal/limiter/state.go:46 for implementation details.
+  </Accordion>
+  
+  <Accordion title="Why separate high and normal priority queues?">
+    Each bucket maintains two queues (internal/limiter/heap.go:11):
+    
+    - **High priority**: Bypasses pacing delays but still respects rate limits
+    - **Normal priority**: Uses spreading to smooth out traffic
+    
+    This allows time-sensitive requests to skip ahead while still preventing rate limit violations.
+  </Accordion>
+  
+  <Accordion title="Why track state per-key and per-region/bucket?">
+    Riot's API has two levels of rate limits:
+    
+    1. **Application limits**: Apply to all requests from a key in a region
+    2. **Method limits**: Apply to specific endpoint patterns
+    
+    RiftRelay tracks both (internal/limiter/state.go:137) and only admits requests when both constraints are satisfied.
+  </Accordion>
+  
+  <Accordion title="Why use a single-threaded event loop?">
+    The limiter uses a single goroutine event loop (internal/limiter/limiter.go:84) that processes:
+    
+    - Admission requests
+    - Rate limit observations from responses
+    - Timer events for scheduled wakeups
+    
+    This eliminates lock contention and makes the state machine easier to reason about. Channels provide safe communication from multiple goroutines.
+  </Accordion>
+</AccordionGroup>
+
+## Concurrency Model
+
+RiftRelay uses structured concurrency:
+
+<Info>
+  The **limiter** runs a single event loop goroutine that owns all mutable state. Other components communicate via channels:
+  
+  - `admitCh`: Admission requests from the proxy
+  - `observeCh`: Rate limit observations from responses
+  - `closeCh`: Shutdown signal
+  
+  This design prevents race conditions without complex locking.
+</Info>
+
+HTTP request handlers run in separate goroutines managed by the standard library's `http.Server`. Each blocks on admission before proceeding to proxy the request.
+
+## Graceful Shutdown
+
+When a SIGINT or SIGTERM is received (main.go:24):
+
+1. HTTP server stops accepting new connections
+2. Existing requests complete within `SHUTDOWN_TIMEOUT`
+3. Limiter rejects queued requests with `shutting_down` error (internal/limiter/limiter.go:128)
+4. Server exits cleanly
+
+<Warning>
+  Requests still in the queue during shutdown are rejected. Set `SHUTDOWN_TIMEOUT` high enough to drain normal traffic, or ensure clients can handle retries.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Rate Limiting" icon="gauge" href="/architecture/rate-limiting">
+    Learn how RiftRelay tracks and enforces rate limits
+  </Card>
+  
+  <Card title="Queue System" icon="list" href="/architecture/queue-system">
+    Understand admission control and request queueing
+  </Card>
+</CardGroup>

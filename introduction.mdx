@@ -1,0 +1,95 @@
+---
+title: Introduction
+description: A rate-limiting proxy for the Riot Games API built in Go with integrated Swagger UI
+---
+
+## What is RiftRelay?
+
+RiftRelay is a rate-limiting proxy that sits between your application and Riot's API, managing rate limits intelligently so you don't have to. Built in Go, it handles the complexity of respecting rate limits while maximizing your API throughput.
+
+Instead of hitting rate limits and dealing with 429 errors, RiftRelay queues your requests and spreads them evenly across the remaining rate limit window. This prevents sudden bursts and ensures smooth, consistent API usage.
+
+## Why use RiftRelay?
+
+When you make requests directly to Riot's API, you need to:
+- Track rate limits across multiple endpoints and regions
+- Handle 429 responses and implement retry logic
+- Manage request pacing to avoid hitting limits
+- Coordinate rate limits across multiple parts of your application
+
+RiftRelay eliminates all of this complexity. You simply send requests through the proxy using the format `/{region}/{riot-api-path}`, and RiftRelay handles the rest.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Intelligent rate limiting" icon="gauge-high">
+    Automatically spreads requests evenly across rate limit windows to avoid bursts and maximize throughput
+  </Card>
+  <Card title="Multi-token support" icon="key">
+    Use multiple Riot API tokens as comma-separated values to increase your rate limits
+  </Card>
+  <Card title="Priority requests" icon="bolt">
+    Add `X-Priority: high` header to bypass pacing delays while still respecting rate limits
+  </Card>
+  <Card title="Integrated Swagger UI" icon="browser">
+    Explore and test API endpoints through the built-in Swagger interface at `/swagger/`
+  </Card>
+  <Card title="Request queuing" icon="list">
+    Configurable queue capacity (default 2048) with admission timeout controls
+  </Card>
+  <Card title="Metrics & monitoring" icon="chart-line">
+    Optional Prometheus metrics endpoint and pprof profiling for performance insights
+  </Card>
+  <Card title="Graceful shutdown" icon="power-off">
+    Drains pending requests on shutdown to ensure no data loss
+  </Card>
+  <Card title="Production-ready" icon="shield-check">
+    Docker support with security hardening, health checks, and proper signal handling
+  </Card>
+</CardGroup>
+
+## How it works
+
+When requests arrive at RiftRelay:
+
+1. **Routing**: RiftRelay parses the request path to determine which rate limit bucket it belongs to
+2. **Queuing**: Requests are added to a priority queue based on their urgency and arrival time
+3. **Scheduling**: A scheduler picks requests from the queue and sends them when there's capacity in the rate limit window
+4. **Pacing**: Instead of sending all requests at once when limits reset, RiftRelay spreads them out evenly over time
+5. **Tracking**: Rate limits are tracked based on response headers from Riot's API
+
+If there's no room in the rate limit window, RiftRelay returns `429 Too Many Requests` with a `Retry-After` header telling you when to try again.
+
+## Real-world use case
+
+```
+┌─────────────┐        ┌─────────────┐        ┌─────────────┐
+│             │        │             │        │             │
+│  Your App   │───────▶│  RiftRelay  │───────▶│  Riot API   │
+│             │        │             │        │             │
+└─────────────┘        └─────────────┘        └─────────────┘
+                             │
+                             │ • Rate limiting
+                             │ • Request queuing
+                             │ • Priority handling
+                             │ • Token rotation
+```
+
+Your application makes requests to RiftRelay as if it were the Riot API. RiftRelay proxies these requests to the actual Riot API while managing all rate limiting concerns transparently.
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get RiftRelay running in under 2 minutes with Docker
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Detailed installation options including Docker, Docker Compose, and from source
+  </Card>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Learn about environment variables, queue settings, and advanced options
+  </Card>
+  <Card title="API reference" icon="code" href="/api/proxy-endpoint">
+    Explore endpoints, headers, and response formats
+  </Card>
+</CardGroup>

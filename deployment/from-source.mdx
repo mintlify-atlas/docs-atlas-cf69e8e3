@@ -1,0 +1,465 @@
+---
+title: 'Build from Source'
+description: 'Build and run RiftRelay from source for development or custom deployments'
+icon: 'code'
+---
+
+Building from source gives you full control over the build process and is ideal for development, testing, or creating custom builds.
+
+## Prerequisites
+
+<Note>
+  RiftRelay requires **Go 1.26.0 or later**. Check your version with `go version`.
+</Note>
+
+- **Go**: Version 1.26.0 or higher ([download](https://go.dev/dl/))
+- **Git**: For cloning the repository
+- **Riot API Token**: Get one from the [Riot Developer Portal](https://developer.riotgames.com/)
+
+## Quick Start
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/renja-g/RiftRelay.git
+    cd RiftRelay
+    ```
+  </Step>
+
+  <Step title="Set environment variables">
+    ```bash
+    export RIOT_TOKEN="your-riot-token"
+    ```
+  </Step>
+
+  <Step title="Run the application">
+    ```bash
+    go run .
+    ```
+
+    The server starts on `http://localhost:8985` by default.
+  </Step>
+
+  <Step title="Test it's working">
+    ```bash
+    curl http://localhost:8985/healthz
+    ```
+  </Step>
+</Steps>
+
+## Development Workflow
+
+### Running with go run
+
+For development, use `go run` to compile and run in one step:
+
+<CodeGroup>
+```bash Basic
+go run .
+```
+
+```bash With Environment Variables
+export RIOT_TOKEN="your-token"
+export PORT="8985"
+export ENABLE_METRICS="true"
+go run .
+```
+
+```bash Inline Variables
+RIOT_TOKEN="your-token" ENABLE_SWAGGER="true" go run .
+```
+</CodeGroup>
+
+### Hot Reloading
+
+For automatic recompilation on file changes, use [air](https://github.com/cosmtrek/air):
+
+```bash
+# Install air
+go install github.com/cosmtrek/air@latest
+
+# Run with hot reload
+air
+```
+
+## Production Build
+
+### Basic Build
+
+Create an optimized production binary:
+
+```bash
+go build -o riftrelay .
+```
+
+Run the binary:
+
+```bash
+export RIOT_TOKEN="your-token"
+./riftrelay
+```
+
+### Optimized Build
+
+Create a smaller, stripped binary:
+
+```bash
+CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o riftrelay .
+```
+
+Build flags explained:
+- **`CGO_ENABLED=0`**: Creates a static binary with no C dependencies
+- **`-trimpath`**: Removes file system paths for reproducible builds
+- **`-ldflags="-s -w"`**: Strips debug info and symbol table to reduce size
+
+<Tip>
+  The optimized build produces a binary ~40% smaller than the basic build and is more portable.
+</Tip>
+
+### Cross-Platform Builds
+
+Build for different platforms:
+
+<CodeGroup>
+```bash Linux (amd64)
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o riftrelay-linux-amd64 .
+```
+
+```bash Linux (arm64)
+GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o riftrelay-linux-arm64 .
+```
+
+```bash macOS (Apple Silicon)
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o riftrelay-darwin-arm64 .
+```
+
+```bash Windows
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o riftrelay-windows-amd64.exe .
+```
+</CodeGroup>
+
+## Testing
+
+### Run All Tests
+
+```bash
+go test ./...
+```
+
+### Run Tests with Coverage
+
+```bash
+go test -cover ./...
+```
+
+### Run Tests with Race Detection
+
+Detect race conditions in concurrent code:
+
+```bash
+go test -race ./internal/config ./internal/router ./internal/limiter ./internal/proxy
+```
+
+<Warning>
+  Race detection significantly slows down tests but is essential for catching concurrency bugs.
+</Warning>
+
+### Run Specific Package Tests
+
+```bash
+# Test only the limiter package
+go test ./internal/limiter
+
+# With verbose output
+go test -v ./internal/limiter
+```
+
+## Benchmarks
+
+Run performance benchmarks:
+
+```bash
+go test -run '^$' -bench . -benchmem ./internal/limiter ./internal/proxy
+```
+
+Flags explained:
+- **`-run '^$'`**: Don't run any tests, only benchmarks
+- **`-bench .`**: Run all benchmarks
+- **`-benchmem`**: Include memory allocation statistics
+
+<Info>
+  Benchmarks help identify performance regressions and optimize critical code paths.
+</Info>
+
+### Sample Benchmark Output
+
+```
+goos: linux
+goarch: amd64
+pkg: github.com/renja-g/RiftRelay/internal/limiter
+BenchmarkAdmit-8        1000000    1023 ns/op     128 B/op    2 allocs/op
+BenchmarkSchedule-8      500000    2456 ns/op     256 B/op    4 allocs/op
+```
+
+## Environment Setup
+
+### Using .env File
+
+Create a `.env` file in the project root:
+
+```bash
+# Copy example
+cp .env.example .env
+
+# Edit with your values
+nano .env
+```
+
+Example `.env`:
+
+```bash
+RIOT_TOKEN=your-riot-token
+PORT=8985
+ENABLE_METRICS=true
+ENABLE_PPROF=false
+ENABLE_SWAGGER=true
+QUEUE_CAPACITY=2048
+ADMISSION_TIMEOUT=5m
+SHUTDOWN_TIMEOUT=20s
+```
+
+Load environment variables:
+
+```bash
+# Using export (bash/zsh)
+export $(cat .env | xargs)
+
+# Or use a tool like direnv
+direnv allow .
+```
+
+### Multiple Riot Tokens
+
+Supply multiple tokens for better throughput:
+
+```bash
+export RIOT_TOKEN="token1,token2,token3"
+go run .
+```
+
+<Note>
+  RiftRelay automatically load-balances requests across all provided tokens.
+</Note>
+
+## Project Structure
+
+Understanding the codebase:
+
+```
+RiftRelay/
+├── main.go                 # Entry point and signal handling
+├── internal/
+│   ├── app/               # Server lifecycle and routing
+│   ├── config/            # Environment configuration
+│   ├── router/            # Path parsing and bucket keys
+│   ├── limiter/           # Admission control and scheduling
+│   ├── proxy/             # Reverse proxy adapter
+│   ├── transport/         # HTTP transport configuration
+│   └── metrics/           # Metrics collection
+├── go.mod                 # Go module definition
+├── go.sum                 # Dependency checksums
+├── Dockerfile             # Container build instructions
+└── docker-compose.yml     # Compose configuration
+```
+
+## Development Commands
+
+### Code Formatting
+
+```bash
+# Format code
+go fmt ./...
+
+# Check formatting
+gofmt -l .
+```
+
+### Linting
+
+```bash
+# Install golangci-lint
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+
+# Run linter
+golangci-lint run
+```
+
+### Dependency Management
+
+```bash
+# Download dependencies
+go mod download
+
+# Verify dependencies
+go mod verify
+
+# Tidy dependencies (remove unused)
+go mod tidy
+
+# Vendor dependencies (optional)
+go mod vendor
+```
+
+## Debugging
+
+### Enable Debug Endpoints
+
+Enable pprof for profiling:
+
+```bash
+ENABLE_PPROF=true go run .
+```
+
+Access profiling endpoints:
+
+- CPU profile: `http://localhost:8985/debug/pprof/profile`
+- Heap profile: `http://localhost:8985/debug/pprof/heap`
+- Goroutines: `http://localhost:8985/debug/pprof/goroutine`
+
+### Using Delve Debugger
+
+Install and use [Delve](https://github.com/go-delve/delve):
+
+```bash
+# Install delve
+go install github.com/go-delve/delve/cmd/dlv@latest
+
+# Debug with delve
+dlv debug .
+```
+
+## Troubleshooting
+
+### Go Version Issues
+
+Check Go version:
+
+```bash
+go version
+```
+
+If you have an older version, upgrade:
+
+```bash
+# Download from https://go.dev/dl/
+# Or use a version manager like gvm
+gvm install go1.26.0
+gvm use go1.26.0
+```
+
+### Module Errors
+
+If you see module-related errors:
+
+```bash
+# Clear module cache
+go clean -modcache
+
+# Re-download dependencies
+go mod download
+```
+
+### Port Already in Use
+
+Change the port:
+
+```bash
+PORT=9000 go run .
+```
+
+Or find what's using port 8985:
+
+```bash
+# Linux/macOS
+lsof -i :8985
+
+# Kill the process
+kill -9 <PID>
+```
+
+### Missing RIOT_TOKEN
+
+If you see an error about missing `RIOT_TOKEN`:
+
+```bash
+export RIOT_TOKEN="your-token"
+go run .
+```
+
+<Warning>
+  The `RIOT_TOKEN` environment variable is required. RiftRelay will not start without it.
+</Warning>
+
+## Production Deployment
+
+### Systemd Service
+
+Create a systemd service for Linux:
+
+```ini
+# /etc/systemd/system/riftrelay.service
+[Unit]
+Description=RiftRelay API Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=riftrelay
+WorkingDirectory=/opt/riftrelay
+EnvironmentFile=/opt/riftrelay/.env
+ExecStart=/opt/riftrelay/riftrelay
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl enable riftrelay
+sudo systemctl start riftrelay
+sudo systemctl status riftrelay
+```
+
+### Process Manager (PM2)
+
+For non-systemd environments:
+
+```bash
+# Install PM2
+npm install -g pm2
+
+# Start with PM2
+RIOT_TOKEN="your-token" pm2 start ./riftrelay --name riftrelay
+
+# Save PM2 config
+pm2 save
+pm2 startup
+```
+
+<Tip>
+  For production deployments, Docker is recommended for easier management and better isolation. See [Docker Deployment](/deployment/docker).
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/api/environment-variables">
+    Configure RiftRelay for your needs
+  </Card>
+  <Card title="Docker Deployment" icon="docker" href="/deployment/docker">
+    Deploy with Docker for production
+  </Card>
+</CardGroup>

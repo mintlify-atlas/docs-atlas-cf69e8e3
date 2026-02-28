@@ -1,0 +1,347 @@
+---
+title: "Configuration"
+description: "Configure RiftRelay to match your needs"
+icon: "gear"
+---
+
+## Environment Variables
+
+RiftRelay is configured entirely through environment variables. All configuration options have sensible defaults.
+
+<Note>
+Create a `.env` file in the root directory or set environment variables directly in your shell.
+</Note>
+
+## Required Configuration
+
+### RIOT_TOKEN
+
+**Required** - Your Riot Games API token(s).
+
+```bash .env
+RIOT_TOKEN=your-riot-token-here
+```
+
+For multiple tokens (load balancing), use comma separation:
+
+```bash .env
+RIOT_TOKEN=token1,token2,token3
+```
+
+<Tip>
+See [Multiple Tokens](/guides/multiple-tokens) for more information on using multiple API tokens.
+</Tip>
+
+## Common Settings
+
+These are the most frequently configured options:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8985` | Server port |
+| `QUEUE_CAPACITY` | `2048` | Max queued requests |
+| `ADMISSION_TIMEOUT` | `5m` | Max wait time for admission (how long a request can wait in the queue) |
+| `SHUTDOWN_TIMEOUT` | `20s` | Graceful shutdown timeout |
+| `ENABLE_METRICS` | `false` | Enable `/metrics` endpoint |
+| `ENABLE_PPROF` | `false` | Enable pprof endpoints |
+| `ENABLE_SWAGGER` | `true` | Enable Swagger UI |
+
+### Example Configuration
+
+```bash .env
+RIOT_TOKEN=RGAPI-your-token-here
+PORT=8985
+QUEUE_CAPACITY=4096
+ADMISSION_TIMEOUT=10m
+ENABLE_METRICS=true
+ENABLE_SWAGGER=true
+```
+
+## Advanced Configuration
+
+<AccordionGroup>
+
+<Accordion title="Server Timeouts" icon="clock">
+
+Control how long the server waits for various operations:
+
+```bash .env
+# Time to read request headers
+SERVER_READ_HEADER_TIMEOUT=10s
+
+# Time to read entire request
+SERVER_READ_TIMEOUT=10s
+
+# Time to write response
+SERVER_WRITE_TIMEOUT=5m
+
+# Idle connection timeout
+SERVER_IDLE_TIMEOUT=90s
+```
+
+**Defaults from config.go:**
+```go
+defaultReadHeaderTimeout  = 10 * time.Second
+defaultReadTimeout        = 10 * time.Second
+defaultWriteTimeout       = 5 * time.Minute
+defaultIdleTimeout        = 90 * time.Second
+```
+
+</Accordion>
+
+<Accordion title="HTTP Transport Settings" icon="network-wired">
+
+Fine-tune the HTTP client used to communicate with Riot's API:
+
+```bash .env
+# Maximum idle connections across all hosts
+TRANSPORT_MAX_IDLE_CONNS=512
+
+# Maximum idle connections per host
+TRANSPORT_MAX_IDLE_CONNS_PER_HOST=256
+
+# Maximum connections per host (0 = unlimited)
+TRANSPORT_MAX_CONNS_PER_HOST=0
+
+# How long idle connections stay open
+TRANSPORT_IDLE_CONN_TIMEOUT=90s
+
+# TLS handshake timeout
+TRANSPORT_TLS_HANDSHAKE_TIMEOUT=10s
+
+# Timeout for 100-continue responses
+TRANSPORT_EXPECT_CONTINUE_TIMEOUT=1s
+
+# TCP dial timeout
+TRANSPORT_DIAL_TIMEOUT=5s
+
+# TCP keep-alive period
+TRANSPORT_DIAL_KEEP_ALIVE=30s
+
+# Response header read timeout
+TRANSPORT_RESPONSE_HEADER_TIMEOUT=15s
+
+# Force HTTP/2 when possible
+TRANSPORT_FORCE_HTTP2=true
+```
+
+**Defaults from config.go:**
+```go
+defaultMaxIdleConns           = 512
+defaultMaxIdleConnsPerHost    = 256
+defaultMaxConnsPerHost        = 0
+defaultIdleConnTimeout        = 90 * time.Second
+defaultTLSHandshakeTimeout    = 10 * time.Second
+defaultExpectContinueTimeout  = 1 * time.Second
+defaultDialTimeout            = 5 * time.Second
+defaultDialKeepAlive          = 30 * time.Second
+defaultResponseHeaderTimeout  = 15 * time.Second
+defaultForceAttemptHTTP2      = true
+```
+
+</Accordion>
+
+<Accordion title="Rate Limiting Behavior" icon="gauge">
+
+```bash .env
+# Additional buffer window added to rate limit windows
+ADDITIONAL_WINDOW_SIZE=150ms
+
+# Upstream request timeout (0 = no timeout)
+UPSTREAM_TIMEOUT=0
+
+# Default application rate limit (when not specified by Riot)
+DEFAULT_APP_RATE_LIMIT=20:1,100:120
+```
+
+**Default from config.go:**
+```go
+defaultAdditionalWindowSize   = 150 * time.Millisecond
+defaultUpstreamRequestTimeout = 0
+defaultAppRateLimit           = "20:1,100:120"
+```
+
+<Info>
+The `DEFAULT_APP_RATE_LIMIT` format is `limit:window,limit:window` where window is in seconds. 
+Example: `20:1,100:120` means 20 requests per second and 100 requests per 120 seconds.
+</Info>
+
+</Accordion>
+
+</AccordionGroup>
+
+## Feature Flags
+
+### ENABLE_METRICS
+
+Exposes Prometheus-compatible metrics at `/metrics`:
+
+```bash .env
+ENABLE_METRICS=true
+```
+
+<CodeGroup>
+
+```bash View Metrics
+curl http://localhost:8985/metrics
+```
+
+```bash Prometheus Config
+scrape_configs:
+  - job_name: 'riftrelay'
+    static_configs:
+      - targets: ['localhost:8985']
+```
+
+</CodeGroup>
+
+### ENABLE_PPROF
+
+Enables Go profiling endpoints for performance analysis:
+
+```bash .env
+ENABLE_PPROF=true
+```
+
+Access pprof endpoints at:
+- `/debug/pprof/` - Index page
+- `/debug/pprof/heap` - Heap profile
+- `/debug/pprof/goroutine` - Goroutine profile
+- `/debug/pprof/profile` - CPU profile
+
+<Warning>
+Only enable pprof in development or secure environments as it exposes internal application details.
+</Warning>
+
+### ENABLE_SWAGGER
+
+Enables the Swagger UI for API exploration:
+
+```bash .env
+ENABLE_SWAGGER=true
+```
+
+Access Swagger UI at `http://localhost:8985/swagger/`
+
+<Tip>
+Swagger is enabled by default and is safe to use in production.
+</Tip>
+
+## Configuration File
+
+The complete `.env.example` from the source repository:
+
+```bash .env.example
+# Required: Riot token (comma separated for multiple tokens)
+RIOT_TOKEN=your-riot-token
+
+# Optional: RiftRelay image to pull/run in docker compose
+RIFTRELAY_IMAGE=renjag/riftrelay:latest
+
+# Optional overrides (RiftRelay)
+PORT=8985
+ENABLE_METRICS=true
+ENABLE_PPROF=false
+ENABLE_SWAGGER=true
+SHUTDOWN_TIMEOUT=20s
+```
+
+## Duration Format
+
+All timeout and duration values use Go's duration format:
+
+- `ms` - Milliseconds (e.g., `150ms`)
+- `s` - Seconds (e.g., `30s`)
+- `m` - Minutes (e.g., `5m`)
+- `h` - Hours (e.g., `2h`)
+
+Examples:
+```bash
+ADMISSION_TIMEOUT=5m
+SHUTDOWN_TIMEOUT=20s
+ADDITIONAL_WINDOW_SIZE=150ms
+```
+
+## Validation
+
+RiftRelay validates all configuration on startup. Invalid values will cause the application to exit with an error message.
+
+**Common validation errors:**
+
+<AccordionGroup>
+  <Accordion title="RIOT_TOKEN env var is required">
+    You must set the `RIOT_TOKEN` environment variable.
+  </Accordion>
+  
+  <Accordion title="PORT must be <= 65535">
+    The port number must be a valid TCP port (1-65535).
+  </Accordion>
+  
+  <Accordion title="QUEUE_CAPACITY must be >= 1">
+    Queue capacity must be a positive integer.
+  </Accordion>
+  
+  <Accordion title="Duration must be >= 0">
+    Timeout values cannot be negative.
+  </Accordion>
+</AccordionGroup>
+
+## Docker Configuration
+
+When running with Docker Compose, set environment variables in your `.env` file:
+
+```yaml docker-compose.yml
+services:
+  riftrelay:
+    image: renjag/riftrelay:latest
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-8985}:${PORT:-8985}"
+```
+
+## Loading Configuration
+
+The configuration loading process from `internal/config/config.go`:
+
+```go config.go
+func Load() (Config, error) {
+	var errs []error
+
+	cfg := Config{
+		Port:             defaultPort,
+		QueueCapacity:    defaultQueueCapacity,
+		AdmissionTimeout: defaultAdmissionTimeout,
+		AdditionalWindow: defaultAdditionalWindowSize,
+		ShutdownTimeout:  defaultShutdownTimeout,
+		MetricsEnabled:   defaultEnableMetrics,
+		PprofEnabled:     defaultEnablePprof,
+		SwaggerEnabled:   defaultEnableSwagger,
+		UpstreamTimeout:  defaultUpstreamRequestTimeout,
+		DefaultAppLimits: defaultAppRateLimit,
+		// ... server and transport configs
+	}
+
+	tokens := splitCSVEnv("RIOT_TOKEN")
+	if len(tokens) == 0 {
+		errs = append(errs, fmt.Errorf("RIOT_TOKEN env var is required"))
+	} else {
+		cfg.Tokens = tokens
+	}
+
+	// Parse and validate all other settings...
+	
+	return cfg, nil
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Priority Requests" icon="bolt" href="/guides/priority-requests">
+    Learn about sending high-priority requests
+  </Card>
+  <Card title="Multiple Tokens" icon="layer-group" href="/guides/multiple-tokens">
+    Configure multiple API tokens for higher throughput
+  </Card>
+</CardGroup>

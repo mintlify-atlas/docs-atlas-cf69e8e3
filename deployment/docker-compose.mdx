@@ -1,0 +1,416 @@
+---
+title: 'Docker Compose Deployment'
+description: 'Deploy RiftRelay using Docker Compose for production environments'
+icon: 'layer-group'
+---
+
+Docker Compose provides a declarative way to deploy RiftRelay with all configuration in version-controlled files.
+
+## Quick Setup
+
+The fastest way to get started is using the automated setup script:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/renja-g/RiftRelay/main/scripts/setup-docker-stack.sh" | bash
+```
+
+<Info>
+  The script downloads `docker-compose.yml` and `.env.example`, prompts for your Riot API token, and starts RiftRelay automatically.
+</Info>
+
+## Manual Setup
+
+<Steps>
+  <Step title="Create project directory">
+    ```bash
+    mkdir riftrelay && cd riftrelay
+    ```
+  </Step>
+
+  <Step title="Create docker-compose.yml">
+    Download the compose file or create it manually:
+
+    ```bash
+    curl -O https://raw.githubusercontent.com/renja-g/RiftRelay/main/docker-compose.yml
+    ```
+  </Step>
+
+  <Step title="Create .env file">
+    Create a `.env` file with your configuration:
+
+    ```bash
+    curl -O https://raw.githubusercontent.com/renja-g/RiftRelay/main/.env.example
+    mv .env.example .env
+    ```
+
+    Edit `.env` and add your Riot token:
+
+    ```bash
+    nano .env
+    ```
+  </Step>
+
+  <Step title="Start the service">
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+
+  <Step title="Verify it's running">
+    ```bash
+    curl http://localhost:8985/healthz
+    ```
+  </Step>
+</Steps>
+
+## Configuration Files
+
+### docker-compose.yml
+
+The official docker-compose.yml includes production-ready settings:
+
+```yaml
+name: riftrelay
+
+services:
+  riftrelay:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${RIFTRELAY_IMAGE:-renjag/riftrelay:latest}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      PORT: "8985"
+    ports:
+      - "8985:8985"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8985/healthz || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 25s
+```
+
+<Note>
+  The compose file uses `${RIFTRELAY_IMAGE:-renjag/riftrelay:latest}` which allows you to override the image in your `.env` file or use the default Docker Hub image.
+</Note>
+
+### .env File
+
+Create a `.env` file in the same directory as `docker-compose.yml`:
+
+```bash
+# Required: Riot token (comma separated for multiple tokens)
+RIOT_TOKEN=your-riot-token
+
+# Optional: RiftRelay image to pull/run in docker compose
+RIFTRELAY_IMAGE=renjag/riftrelay:latest
+
+# Optional overrides (RiftRelay)
+PORT=8985
+ENABLE_METRICS=true
+ENABLE_PPROF=false
+ENABLE_SWAGGER=true
+SHUTDOWN_TIMEOUT=20s
+```
+
+<Warning>
+  Never commit your `.env` file to version control. Add it to `.gitignore` to prevent accidentally exposing your Riot API token.
+</Warning>
+
+## Service Configuration
+
+### Restart Policy
+
+```yaml
+restart: unless-stopped
+```
+
+The service automatically restarts unless explicitly stopped. This ensures high availability.
+
+### Init System
+
+```yaml
+init: true
+```
+
+Uses tini as PID 1 to properly handle signals and reap zombie processes.
+
+### Health Checks
+
+```yaml
+healthcheck:
+  test: ["CMD-SHELL", "wget --spider -q http://127.0.0.1:8985/healthz || exit 1"]
+  interval: 15s
+  timeout: 3s
+  retries: 3
+  start_period: 20s
+```
+
+- **interval**: Check every 15 seconds
+- **timeout**: Fail if check takes longer than 3 seconds
+- **retries**: Mark unhealthy after 3 consecutive failures
+- **start_period**: Grace period of 20 seconds after container starts
+
+Check health status:
+
+```bash
+docker compose ps
+```
+
+### Security Settings
+
+<CodeGroup>
+```yaml Read-only Filesystem
+read_only: true
+tmpfs:
+  - /tmp:size=64m,mode=1777
+```
+
+```yaml Drop Capabilities
+cap_drop:
+  - ALL
+```
+
+```yaml Prevent Privilege Escalation
+security_opt:
+  - no-new-privileges:true
+```
+</CodeGroup>
+
+These settings provide defense-in-depth:
+
+- **read_only**: Container filesystem is immutable
+- **tmpfs**: Writable `/tmp` in memory (64MB limit)
+- **cap_drop**: Drops all Linux capabilities
+- **no-new-privileges**: Prevents gaining additional privileges
+
+<Tip>
+  These security settings follow container security best practices and should be kept enabled in production.
+</Tip>
+
+### Graceful Shutdown
+
+```yaml
+stop_grace_period: 25s
+```
+
+Gives the application 25 seconds to drain in-flight requests before forcefully stopping. This is 5 seconds more than the default `SHUTDOWN_TIMEOUT` (20s) to ensure clean shutdown.
+
+## Environment Variables
+
+All RiftRelay configuration can be set in the `.env` file:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RIOT_TOKEN` | *required* | Riot API token (comma-separated for multiple) |
+| `RIFTRELAY_IMAGE` | `renjag/riftrelay:latest` | Docker image to use |
+| `PORT` | `8985` | Server port |
+| `QUEUE_CAPACITY` | `2048` | Maximum queued requests |
+| `ADMISSION_TIMEOUT` | `5m` | Max wait time in queue |
+| `SHUTDOWN_TIMEOUT` | `20s` | Graceful shutdown timeout |
+| `ENABLE_METRICS` | `false` | Enable `/metrics` endpoint |
+| `ENABLE_PPROF` | `false` | Enable pprof endpoints |
+| `ENABLE_SWAGGER` | `true` | Enable Swagger UI |
+
+<Info>
+  See the [Configuration](/api/environment-variables) page for all available options.
+</Info>
+
+## Managing the Service
+
+### Starting and Stopping
+
+<CodeGroup>
+```bash Start
+# Start in background
+docker compose up -d
+
+# Start with logs
+docker compose up
+```
+
+```bash Stop
+# Stop service
+docker compose down
+
+# Stop and remove volumes
+docker compose down -v
+```
+
+```bash Restart
+docker compose restart
+```
+</CodeGroup>
+
+### Viewing Logs
+
+<CodeGroup>
+```bash Follow Logs
+docker compose logs -f
+```
+
+```bash Recent Logs
+# Last 100 lines
+docker compose logs --tail 100
+
+# With timestamps
+docker compose logs -t
+```
+
+```bash Service Logs
+# Logs for specific service
+docker compose logs -f riftrelay
+```
+</CodeGroup>
+
+### Updating
+
+<Steps>
+  <Step title="Pull latest image">
+    ```bash
+    docker compose pull
+    ```
+  </Step>
+
+  <Step title="Restart with new image">
+    ```bash
+    docker compose up -d
+    ```
+  </Step>
+
+  <Step title="Clean up old images">
+    ```bash
+    docker image prune
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  Docker Compose automatically recreates containers when the image changes.
+</Note>
+
+## Production Deployment
+
+### Resource Limits
+
+Add resource limits to your `docker-compose.yml`:
+
+```yaml
+services:
+  riftrelay:
+    # ... other config ...
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+```
+
+### Multiple Instances
+
+Scale the service for higher throughput:
+
+```bash
+docker compose up -d --scale riftrelay=3
+```
+
+<Warning>
+  When scaling, you'll need a load balancer. Multiple instances sharing the same `RIOT_TOKEN` will compete for rate limits.
+</Warning>
+
+### Using Multiple Tokens
+
+For better throughput with multiple tokens, set them in `.env`:
+
+```bash
+RIOT_TOKEN=token1,token2,token3
+```
+
+RiftRelay automatically load-balances requests across all tokens.
+
+### Monitoring
+
+Enable metrics and health checks:
+
+```bash
+# Enable metrics in .env
+ENABLE_METRICS=true
+
+# Check health
+curl http://localhost:8985/healthz
+
+# View metrics
+curl http://localhost:8985/metrics
+```
+
+## Troubleshooting
+
+### Service won't start
+
+Check service status:
+
+```bash
+docker compose ps
+```
+
+View detailed logs:
+
+```bash
+docker compose logs riftrelay
+```
+
+Common issues:
+- Missing or invalid `RIOT_TOKEN` in `.env`
+- Port 8985 already in use
+- Syntax errors in `docker-compose.yml`
+
+### Configuration not applying
+
+Recreate containers after changing `.env`:
+
+```bash
+docker compose up -d --force-recreate
+```
+
+### Permission errors
+
+The container runs as non-root user `app`. If you mount volumes, ensure correct permissions:
+
+```bash
+chown -R 1000:1000 /path/to/volume
+```
+
+### Port conflicts
+
+Change the host port in `docker-compose.yml`:
+
+```yaml
+ports:
+  - "9000:8985"  # Use port 9000 on host
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/api/environment-variables">
+    Explore all configuration options
+  </Card>
+  <Card title="Usage" icon="play" href="/guides/usage">
+    Learn how to use RiftRelay
+  </Card>
+</CardGroup>

@@ -1,0 +1,182 @@
+---
+title: "Basic Usage"
+description: "Learn how to send requests through RiftRelay"
+icon: "play"
+---
+
+## Request Format
+
+RiftRelay uses a simple URL format to proxy requests to the Riot Games API:
+
+```
+/{region}/{riot-api-path}
+```
+
+<Note>
+The region can be any valid Riot API region such as `europe`, `americas`, `asia`, `na1`, `euw1`, etc.
+</Note>
+
+## Sending Requests
+
+<Steps>
+  <Step title="Start RiftRelay">
+    Ensure RiftRelay is running on your configured port (default: `8985`):
+    
+    ```bash
+    export RIOT_TOKEN="your-riot-token"
+    go run .
+    ```
+  </Step>
+  
+  <Step title="Send a Request">
+    Use the format `/{region}/{riot-api-path}` to make API calls:
+    
+    ```bash
+    curl "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+    ```
+  </Step>
+  
+  <Step title="Handle the Response">
+    RiftRelay returns the same response from Riot's API, with additional rate limit management.
+  </Step>
+</Steps>
+
+## Real Examples
+
+<CodeGroup>
+
+```bash Get Account by Riot ID
+curl "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+```
+
+```bash Get Summoner by Name
+curl "http://localhost:8985/na1/lol/summoner/v4/summoners/by-name/Doublelift"
+```
+
+```bash Get Match Details
+curl "http://localhost:8985/europe/lol/match/v5/matches/EUW1_1234567890"
+```
+
+```bash Get Champion Mastery
+curl "http://localhost:8985/na1/lol/champion-mastery/v4/champion-masteries/by-puuid/{puuid}"
+```
+
+</CodeGroup>
+
+## Using Swagger UI
+
+RiftRelay includes an integrated Swagger UI for easy API exploration and testing.
+
+### Accessing Swagger UI
+
+<Steps>
+  <Step title="Enable Swagger">
+    Swagger UI is enabled by default. If disabled, set:
+    
+    ```bash .env
+    ENABLE_SWAGGER=true
+    ```
+  </Step>
+  
+  <Step title="Open in Browser">
+    Navigate to `http://localhost:8985/swagger/` in your web browser.
+  </Step>
+  
+  <Step title="Explore Endpoints">
+    Use the interactive interface to explore available Riot API endpoints and send test requests.
+  </Step>
+</Steps>
+
+<img 
+  src="https://github.com/user-attachments/assets/4dc41b61-1cc7-419e-80c6-0c93cf213f0d" 
+  alt="RiftRelay Swagger UI" 
+  width="1440" 
+  height="783"
+/>
+
+<Tip>
+Swagger UI automatically includes your configured `RIOT_TOKEN`, so you can test requests immediately without additional setup.
+</Tip>
+
+## Health Check Endpoint
+
+Use the health check endpoint to verify RiftRelay is running:
+
+```bash
+curl http://localhost:8985/healthz
+```
+
+A successful response indicates the server is operational.
+
+## Response Handling
+
+### Successful Requests
+
+When a request is successfully proxied to Riot's API, RiftRelay returns:
+- The original response body from Riot's API
+- Original response headers
+- HTTP status code from Riot's API
+
+### Rate Limited Requests
+
+When the queue is full or rate limits are exceeded, RiftRelay returns:
+
+```json
+{
+  "status": 429,
+  "message": "Too Many Requests"
+}
+```
+
+<Info>
+The response includes a `Retry-After` header indicating when to retry the request (in seconds).
+</Info>
+
+### Error Responses
+
+<Accordion title="400 Bad Request">
+  Invalid route format. Ensure you're using the correct `/{region}/{riot-api-path}` format.
+</Accordion>
+
+<Accordion title="429 Too Many Requests">
+  Rate limit exceeded or queue is full. Check the `Retry-After` header for retry timing.
+</Accordion>
+
+<Accordion title="502 Bad Gateway">
+  Upstream Riot API is unavailable. This is typically a temporary issue.
+</Accordion>
+
+## Request Flow
+
+<Steps>
+  <Step title="Request Received">
+    RiftRelay receives your request and parses the region and API path.
+  </Step>
+  
+  <Step title="Rate Limit Check">
+    The request is checked against current rate limits for the region and API endpoint.
+  </Step>
+  
+  <Step title="Queue or Send">
+    If rate limits allow, the request is sent immediately. Otherwise, it's queued and sent when capacity is available.
+  </Step>
+  
+  <Step title="Response Returned">
+    RiftRelay forwards the response from Riot's API and updates its internal rate limit state.
+  </Step>
+</Steps>
+
+<Warning>
+RiftRelay spreads requests evenly across the rate limit window to avoid bursts. If you need immediate sending, use [priority requests](/guides/priority-requests).
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Learn about all available configuration options
+  </Card>
+  <Card title="Priority Requests" icon="bolt" href="/guides/priority-requests">
+    Send time-sensitive requests with higher priority
+  </Card>
+</CardGroup>

@@ -1,0 +1,349 @@
+---
+title: Rate Limiting
+description: How RiftRelay tracks and manages Riot API rate limits
+---
+
+RiftRelay automatically tracks rate limits from Riot API response headers and uses them to pace future requests. This prevents rate limit violations while maximizing throughput.
+
+## Riot API Rate Limits
+
+The Riot API enforces two types of rate limits:
+
+<CardGroup cols={2}>
+  <Card title="Application Rate Limits" icon="app-window">
+    Apply to **all requests** from an API key within a region. Example: 20 requests per second, 100 requests per 2 minutes.
+  </Card>
+  
+  <Card title="Method Rate Limits" icon="function">
+    Apply to **specific endpoints** (e.g., `/lol/summoner/v4/summoners/by-name/{name}`). More restrictive than app limits.
+  </Card>
+</CardGroup>
+
+Both types can have **multiple windows** (e.g., 1 second and 120 seconds). A request must satisfy all windows to proceed.
+
+<Info>
+  RiftRelay tracks both limit types independently for each API key and only admits requests when **both** application and method constraints are satisfied.
+</Info>
+
+## Rate Limit Headers
+
+Riot's API returns rate limit information in response headers:
+
+### Limit Headers
+
+```http
+X-App-Rate-Limit: 20:1,100:120
+X-Method-Rate-Limit: 20:1,100:120
+```
+
+Format: `limit:window_seconds,limit:window_seconds`
+
+- `20:1` = 20 requests per 1 second
+- `100:120` = 100 requests per 120 seconds
+
+### Count Headers
+
+```http
+X-App-Rate-Limit-Count: 5:1,42:120
+X-Method-Rate-Limit-Count: 3:1,15:120
+```
+
+Format: `count:window_seconds,count:window_seconds`
+
+Indicates how many requests have been used in each window.
+
+### Rate Limit Type
+
+```http
+X-Rate-Limit-Type: application
+```
+
+or
+
+```http
+X-Rate-Limit-Type: method
+```
+
+Only present in **429 Too Many Requests** responses. Indicates which limit was exceeded.
+
+### Retry-After
+
+```http
+Retry-After: 30
+```
+
+On 429 responses, tells you how many seconds to wait before retrying.
+
+## Header Parsing
+
+RiftRelay parses these headers using `parseRateHeader` (internal/limiter/headers.go:36):
+
+```go
+func parseRateHeader(limitHeader, countHeader string) []parsedWindow {
+    limits := strings.Split(strings.TrimSpace(limitHeader), ",")
+    counts := strings.Split(strings.TrimSpace(countHeader), ",")
+    
+    for i := range limits {
+        // Parse "limit:window" format
+        lParts := strings.SplitN(limits[i], ":", 2)
+        limit, _ := strconv.Atoi(lParts[0])
+        windowSecs, _ := strconv.Atoi(lParts[1])
+        
+        // Parse corresponding count
+        count := 0
+        if i < len(counts) {
+            cParts := strings.SplitN(counts[i], ":", 2)
+            count, _ = strconv.Atoi(cParts[0])
+        }
+        
+        // Store as parsedWindow{limit, count, window}
+    }
+}
+```
+
+<Tip>
+  The count headers tell RiftRelay the current usage state without having to track every request from other sources using the same API key.
+</Tip>
+
+## Rate Limit State
+
+RiftRelay maintains rate limit state in `rateState` (internal/limiter/state.go:12):
+
+```go
+type rateState struct {
+    windows      []limitWindow     // Active rate limit windows
+    blockedUntil time.Time         // When to resume after 429
+    lastGranted  time.Time         // Last request time (for pacing)
+}
+
+type limitWindow struct {
+    limit   int           // Max requests in window
+    used    int           // Requests used so far
+    window  time.Duration // Window duration
+    resetAt time.Time     // When window resets
+}
+```
+
+Each API key has:
+- **Per-region app state**: `map[string]*rateState` (internal/limiter/state.go:138)
+- **Per-bucket method state**: `map[string]*rateState` (internal/limiter/state.go:139)
+
+## Rate Limit Spreading
+
+Instead of allowing bursts when limits reset, RiftRelay **spreads requests evenly** across the remaining window.
+
+### Spreading Algorithm (internal/limiter/state.go:18)
+
+```go
+func (s *rateState) nextAllowed(now time.Time, bypassPacing bool) time.Time {
+    next := now
+    
+    // 1. Check if blocked by 429
+    if s.blockedUntil.After(next) {
+        next = s.blockedUntil
+    }
+    
+    // 2. For each window, check capacity
+    for _, w := range s.windows {
+        // Reset window if expired
+        if !w.resetAt.After(now) {
+            w.used = 0
+            w.resetAt = now.Add(w.window)
+        }
+        
+        // If at capacity, wait until reset
+        if w.used >= w.limit && w.resetAt.After(next) {
+            next = w.resetAt
+            continue
+        }
+        
+        // 3. Calculate pacing delay (unless high priority)
+        if !bypassPacing {
+            requestsLeft := w.limit - w.used
+            if requestsLeft > 0 && !s.lastGranted.IsZero() {
+                // Spread remaining slots evenly
+                timeLeft := w.resetAt.Sub(s.lastGranted)
+                nextSlot := s.lastGranted.Add(timeLeft / time.Duration(requestsLeft+1))
+                if nextSlot.After(next) {
+                    next = nextSlot
+                }
+            }
+        }
+    }
+    
+    return next
+}
+```
+
+### Example: Spreading Calculation
+
+Suppose:
+- Limit: 20 requests per 10 seconds
+- Used: 5 requests
+- Last request: 2 seconds ago
+- Time until reset: 8 seconds
+
+```
+requestsLeft = 20 - 5 = 15
+timeLeft = 8 seconds
+nextSlot = 2s ago + (8s / 16) = 2s ago + 0.5s = 1.5s from now
+```
+
+The next request waits ~0.5 seconds to maintain even spacing.
+
+<Info>
+  High-priority requests (with `X-Priority: high` header) bypass pacing delays but still respect hard rate limits. See internal/limiter/state.go:35.
+</Info>
+
+## Updating Rate Limit State
+
+When a response is received, the limiter observes it (internal/limiter/limiter.go:185):
+
+```go
+func (l *Limiter) handleObservation(obs Observation, keys []keyState, ...) {
+    // Parse headers
+    appLimits := parseRateHeader(
+        obs.Header.Get("X-App-Rate-Limit"),
+        obs.Header.Get("X-App-Rate-Limit-Count"),
+    )
+    methodLimits := parseRateHeader(
+        obs.Header.Get("X-Method-Rate-Limit"),
+        obs.Header.Get("X-Method-Rate-Limit-Count"),
+    )
+    
+    // Check for 429 and rate limit type
+    limitType := obs.Header.Get("X-Rate-Limit-Type")
+    applyMethodRetry := obs.StatusCode == 429 && limitType == "method"
+    applyAppRetry := obs.StatusCode == 429 && !applyMethodRetry
+    
+    // Parse Retry-After
+    retryAfter := parseRetryAfter(obs.Header.Get("Retry-After"), now)
+    
+    // Update state
+    key.app(region).apply(appLimits, retryAfter, applyAppRetry, ...)
+    key.method(bucket).apply(methodLimits, retryAfter, applyMethodRetry, ...)
+}
+```
+
+### State Application (internal/limiter/state.go:82)
+
+The `apply` method:
+
+1. **Updates windows**: Replaces limit windows with new values from headers
+2. **Syncs usage counts**: Sets `used` to the count from headers
+3. **Preserves local state**: If a window is still active and local `used` is higher, keep the local value
+4. **Applies retry blocking**: If this is a 429 response, set `blockedUntil` to the Retry-After time
+
+```go
+func (s *rateState) apply(windows []parsedWindow, retryAfter *time.Time, applyRetry bool, ...) {
+    if len(windows) > 0 {
+        // Build map of existing windows
+        existing := make(map[time.Duration]limitWindow)
+        for _, w := range s.windows {
+            existing[w.window] = w
+        }
+        
+        // Create updated windows
+        for _, parsed := range windows {
+            next := limitWindow{
+                limit:   parsed.limit,
+                used:    parsed.count,
+                window:  parsed.window + additionalWindow,
+                resetAt: now.Add(parsed.window + additionalWindow),
+            }
+            
+            // Keep higher usage count if window still active
+            if old, ok := existing[next.window]; ok && old.resetAt.After(now) {
+                if old.used > next.used {
+                    next.used = old.used
+                }
+                next.resetAt = old.resetAt
+            }
+        }
+    }
+    
+    // Apply 429 blocking
+    if applyRetry && retryAfter != nil {
+        s.blockedUntil = *retryAfter
+    }
+}
+```
+
+<Warning>
+  RiftRelay adds `ADDITIONAL_WINDOW_SIZE` (default 150ms) to rate limit windows as a safety buffer. This accounts for network latency and clock drift. See internal/limiter/state.go:105.
+</Warning>
+
+## Retry-After Handling
+
+The `parseRetryAfter` function (internal/limiter/headers.go:16) supports both formats:
+
+**Seconds format:**
+```http
+Retry-After: 30
+```
+
+**HTTP date format:**
+```http
+Retry-After: Wed, 21 Oct 2026 07:28:00 GMT
+```
+
+When a 429 is received:
+
+1. The `blockedUntil` time is set based on Retry-After
+2. The `X-Rate-Limit-Type` header determines whether to block app-level or method-level requests
+3. All subsequent admission checks for that key/region or key/bucket are blocked until `blockedUntil`
+
+<Info>
+  If a 429 doesn't include `X-Rate-Limit-Type`, RiftRelay assumes it's an **application-level** rate limit and blocks all requests in that region. See internal/limiter/limiter.go:202.
+</Info>
+
+## Default Rate Limits
+
+If RiftRelay hasn't received headers for a region yet, it uses default application limits configured via `DEFAULT_APP_RATE_LIMIT` (default: `20:1,100:120`).
+
+See internal/limiter/limiter.go:86 for initialization:
+
+```go
+defaultApp := parseRateHeader(cfg.DefaultAppLimits, "")
+for i := range keys {
+    keys[i] = newKeyState(defaultApp)
+}
+```
+
+<Tip>
+  Method limits have no defaults. They're learned from the first response to each endpoint pattern.
+</Tip>
+
+## Multi-Key Support
+
+When multiple API keys are configured via `RIOT_TOKEN=token1,token2,token3`, RiftRelay:
+
+1. Tracks separate rate limit state for each key (internal/limiter/limiter.go:85)
+2. Picks the key with the **earliest available slot** for each request (internal/limiter/limiter.go:274)
+3. Rotates usage across keys to maximize total throughput
+
+```go
+func (l *Limiter) pickKey(now time.Time, keys []keyState, region, bucket string, priority Priority) (int, time.Time) {
+    bestIndex := -1
+    bestAt := time.Time{}
+    
+    for i := range keys {
+        appAt := keys[i].app(region).nextAllowed(now, bypassPacing)
+        methodAt := keys[i].method(bucket).nextAllowed(now, bypassPacing)
+        readyAt := max(appAt, methodAt)  // Must satisfy both
+        
+        if bestIndex < 0 || readyAt.Before(bestAt) {
+            bestIndex = i
+            bestAt = readyAt
+        }
+    }
+    
+    return bestIndex, bestAt
+}
+```
+
+## Next Steps
+
+<Card title="Queue System" icon="list" href="/architecture/queue-system">
+  Learn how requests are queued and scheduled for admission
+</Card>

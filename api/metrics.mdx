@@ -1,0 +1,353 @@
+---
+title: 'Metrics'
+description: 'Prometheus-compatible metrics for monitoring RiftRelay performance'
+---
+
+## Overview
+
+RiftRelay exposes operational metrics in Prometheus format, providing insights into request rates, queue depth, admission times, and upstream response codes. These metrics are essential for monitoring performance and troubleshooting issues.
+
+<Note>
+  Metrics collection is **disabled by default**. Enable it by setting `ENABLE_METRICS=true`.
+</Note>
+
+## Endpoint
+
+```
+GET /metrics
+```
+
+## Configuration
+
+Enable metrics in your environment configuration:
+
+```bash
+ENABLE_METRICS=true
+```
+
+Or in Docker:
+
+```bash
+docker run -e ENABLE_METRICS=true renjag/riftrelay:latest
+```
+
+## Authentication
+
+No authentication required when enabled.
+
+<Warning>
+  Metrics may expose sensitive information about your traffic patterns. Consider restricting access in production environments using a reverse proxy or firewall rules.
+</Warning>
+
+## Response Format
+
+Metrics are returned in Prometheus text exposition format:
+
+```
+Content-Type: text/plain; version=0.0.4
+```
+
+## Available Metrics
+
+### Request Metrics
+
+<ResponseField name="riftrelay_http_requests_total" type="counter">
+  Total number of HTTP requests received by RiftRelay
+  
+  This counter increments for every request, including health checks and metrics requests.
+</ResponseField>
+
+<ResponseField name="riftrelay_http_inflight" type="gauge">
+  Current number of requests being processed
+  
+  Useful for monitoring concurrency and identifying request backlog.
+</ResponseField>
+
+### Admission Metrics
+
+<ResponseField name="riftrelay_admission_wait_avg_ms" type="gauge">
+  Average admission wait time in milliseconds
+  
+  Calculated as: `total_admission_wait_ns / admission_count / 1,000,000`
+  
+  Higher values indicate requests are waiting longer in the queue, possibly due to rate limits.
+</ResponseField>
+
+<ResponseField name="riftrelay_admission_total" type="counter">
+  Total admission attempts by outcome
+  
+  **Labels**:
+  - `outcome="allowed"` - Request was admitted and forwarded
+  - `outcome="rejected"` - Request was rejected (queue full or timeout)
+</ResponseField>
+
+### Queue Metrics
+
+<ResponseField name="riftrelay_queue_depth" type="gauge">
+  Current queue depth per bucket and priority
+  
+  **Labels**:
+  - `bucket` - Rate limit bucket (e.g., `"na1:lol/summoner/v4/summoners/by-name/{summonerName}"`)
+  - `priority` - Request priority (`"normal"` or `"high"`)
+  
+  Indicates how many requests are waiting for each endpoint and region.
+</ResponseField>
+
+### Upstream Response Metrics
+
+<ResponseField name="riftrelay_upstream_responses_total" type="counter">
+  Total upstream responses by HTTP status code
+  
+  **Labels**:
+  - `code` - HTTP status code (e.g., `"200"`, `"404"`, `"429"`, `"502"`)
+  
+  Useful for monitoring error rates and Riot API availability.
+</ResponseField>
+
+## Example Response
+
+```prometheus
+riftrelay_http_requests_total 1523
+riftrelay_http_inflight 3
+riftrelay_admission_wait_avg_ms 42.156
+riftrelay_admission_total{outcome="allowed"} 1489
+riftrelay_admission_total{outcome="rejected"} 34
+riftrelay_queue_depth{bucket="na1:lol/summoner/v4/summoners/by-name/{summonerName}",priority="normal"} 12
+riftrelay_queue_depth{bucket="na1:lol/summoner/v4/summoners/by-name/{summonerName}",priority="high"} 2
+riftrelay_queue_depth{bucket="europe:riot/account/v1/accounts/by-riot-id/{gameName}/{tagLine}",priority="normal"} 5
+riftrelay_upstream_responses_total{code="200"} 1401
+riftrelay_upstream_responses_total{code="404"} 67
+riftrelay_upstream_responses_total{code="429"} 15
+riftrelay_upstream_responses_total{code="502"} 6
+```
+
+## Prometheus Configuration
+
+Add RiftRelay to your Prometheus scrape configuration:
+
+```yaml
+scrape_configs:
+  - job_name: 'riftrelay'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['localhost:8985']
+    metrics_path: '/metrics'
+```
+
+## Grafana Dashboard
+
+### Example Queries
+
+**Request Rate (per second)**:
+```promql
+rate(riftrelay_http_requests_total[5m])
+```
+
+**Admission Success Rate**:
+```promql
+sum(rate(riftrelay_admission_total{outcome="allowed"}[5m])) 
+/ 
+sum(rate(riftrelay_admission_total[5m]))
+```
+
+**Average Queue Depth by Region**:
+```promql
+avg(riftrelay_queue_depth) by (bucket)
+```
+
+**Error Rate (4xx and 5xx)**:
+```promql
+sum(rate(riftrelay_upstream_responses_total{code=~"4..|5.."}[5m]))
+```
+
+**Upstream 429 Rate (Rate Limit Hits)**:
+```promql
+rate(riftrelay_upstream_responses_total{code="429"}[5m])
+```
+
+### Sample Dashboard Panels
+
+**Requests Per Second**:
+```json
+{
+  "targets": [
+    {
+      "expr": "rate(riftrelay_http_requests_total[5m])",
+      "legendFormat": "Requests/sec"
+    }
+  ],
+  "title": "Request Rate",
+  "type": "graph"
+}
+```
+
+**Admission Wait Time**:
+```json
+{
+  "targets": [
+    {
+      "expr": "riftrelay_admission_wait_avg_ms",
+      "legendFormat": "Avg Wait (ms)"
+    }
+  ],
+  "title": "Admission Wait Time",
+  "type": "graph"
+}
+```
+
+**Queue Depth Heatmap**:
+```json
+{
+  "targets": [
+    {
+      "expr": "riftrelay_queue_depth",
+      "legendFormat": "{{bucket}} [{{priority}}]"
+    }
+  ],
+  "title": "Queue Depth by Bucket",
+  "type": "graph"
+}
+```
+
+## Alerting Rules
+
+### High Rejection Rate
+
+Alert when more than 10% of requests are rejected:
+
+```yaml
+groups:
+  - name: riftrelay
+    rules:
+      - alert: HighAdmissionRejectionRate
+        expr: |
+          sum(rate(riftrelay_admission_total{outcome="rejected"}[5m])) 
+          / 
+          sum(rate(riftrelay_admission_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RiftRelay is rejecting >10% of requests"
+          description: "Admission rejection rate is {{ $value | humanizePercentage }}"
+```
+
+### High Queue Depth
+
+Alert when queue depth exceeds threshold:
+
+```yaml
+- alert: HighQueueDepth
+  expr: riftrelay_queue_depth > 1000
+  for: 2m
+  labels:
+    severity: warning
+  annotations:
+    summary: "RiftRelay queue depth is high"
+    description: "Queue depth for {{ $labels.bucket }} is {{ $value }}"
+```
+
+### Upstream Error Rate
+
+Alert when upstream error rate is elevated:
+
+```yaml
+- alert: HighUpstreamErrorRate
+  expr: |
+    sum(rate(riftrelay_upstream_responses_total{code=~"5.."}[5m])) 
+    / 
+    sum(rate(riftrelay_upstream_responses_total[5m])) > 0.05
+  for: 5m
+  labels:
+    severity: critical
+  annotations:
+    summary: "RiftRelay upstream error rate >5%"
+    description: "Upstream error rate is {{ $value | humanizePercentage }}"
+```
+
+## Implementation Details
+
+Metrics are collected by the `metrics.Collector` struct and exposed via HTTP handler.
+
+Source: `internal/metrics/metrics.go:79-138`
+
+### Metric Collection Points
+
+**Request Middleware**: Tracks total requests and inflight count (`internal/metrics/metrics.go:38-45`)
+
+**Admission Observer**: Records queue depth, admission wait time, and outcomes (`internal/metrics/metrics.go:47-71`)
+
+**Upstream Observer**: Tracks response status codes (`internal/metrics/metrics.go:73-77`)
+
+### Thread Safety
+
+All metrics use atomic operations or mutex-protected maps for thread-safe concurrent access.
+
+## Examples
+
+### Fetch Metrics
+
+```bash
+curl http://localhost:8985/metrics
+```
+
+### Monitor Specific Metric
+
+Filter for admission metrics only:
+
+```bash
+curl -s http://localhost:8985/metrics | grep admission
+```
+
+### Export to File
+
+Save metrics snapshot for analysis:
+
+```bash
+curl -s http://localhost:8985/metrics > metrics-$(date +%s).txt
+```
+
+### Custom Monitoring Script
+
+<CodeGroup>
+```python Python
+import requests
+import re
+
+response = requests.get("http://localhost:8985/metrics")
+metrics = response.text
+
+# Parse rejection rate
+admission_pattern = r'riftrelay_admission_total\{outcome="(\w+)"\}\s+(\d+)'
+matches = re.findall(admission_pattern, metrics)
+admission_counts = {outcome: int(count) for outcome, count in matches}
+
+total = sum(admission_counts.values())
+rejected = admission_counts.get('rejected', 0)
+rejection_rate = (rejected / total * 100) if total > 0 else 0
+
+print(f"Rejection rate: {rejection_rate:.2f}%")
+if rejection_rate > 10:
+    print("WARNING: High rejection rate detected!")
+```
+
+```bash Shell Script
+#!/bin/bash
+
+# Fetch metrics and check queue depth
+QUEUE_DEPTH=$(curl -s http://localhost:8985/metrics | \
+    grep riftrelay_queue_depth | \
+    awk '{sum+=$NF} END {print sum}')
+
+if [ "$QUEUE_DEPTH" -gt 1000 ]; then
+    echo "WARNING: Queue depth is $QUEUE_DEPTH"
+else
+    echo "Queue depth normal: $QUEUE_DEPTH"
+fi
+```
+</CodeGroup>
+
+## Related Endpoints
+
+- [Health Check](/api/health-check) - Service availability check
+- [Proxy Endpoint](/api/proxy-endpoint) - Main API proxy interface

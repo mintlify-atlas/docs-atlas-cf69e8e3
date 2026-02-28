@@ -1,0 +1,453 @@
+---
+title: "Multiple API Tokens"
+description: "Increase throughput by load balancing across multiple Riot API tokens"
+icon: "layer-group"
+---
+
+## Why Use Multiple Tokens?
+
+Each Riot API token has its own independent rate limits. By using multiple tokens, RiftRelay can:
+
+<CardGroup cols={2}>
+  <Card title="Higher Throughput" icon="gauge-high">
+    Process more requests per second by distributing load across tokens
+  </Card>
+  <Card title="Load Balancing" icon="scale-balanced">
+    Automatically distribute requests to the least-loaded token
+  </Card>
+  <Card title="Redundancy" icon="shield">
+    Continue operating if one token hits rate limits
+  </Card>
+  <Card title="Burst Handling" icon="chart-line">
+    Handle sudden traffic spikes more effectively
+  </Card>
+</CardGroup>
+
+## Configuration
+
+Provide multiple tokens as comma-separated values in the `RIOT_TOKEN` environment variable:
+
+```bash .env
+RIOT_TOKEN=token1,token2,token3
+```
+
+<Note>
+Spaces around commas are automatically trimmed. Both formats work:
+- `RIOT_TOKEN=token1,token2,token3`
+- `RIOT_TOKEN=token1, token2, token3`
+</Note>
+
+## Real Configuration Example
+
+<CodeGroup>
+
+```bash .env File
+# Multiple production API tokens
+RIOT_TOKEN=RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx,RGAPI-yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy,RGAPI-zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz
+
+PORT=8985
+QUEUE_CAPACITY=4096
+ENABLE_METRICS=true
+```
+
+```bash Environment Variable
+export RIOT_TOKEN="RGAPI-token1,RGAPI-token2,RGAPI-token3"
+go run .
+```
+
+```yaml Docker Compose
+services:
+  riftrelay:
+    image: renjag/riftrelay:latest
+    environment:
+      RIOT_TOKEN: "${RIOT_TOKEN}"
+      PORT: 8985
+      QUEUE_CAPACITY: 4096
+    ports:
+      - "8985:8985"
+```
+
+</CodeGroup>
+
+## How It Works
+
+RiftRelay parses comma-separated tokens on startup using this logic from `internal/config/config.go`:
+
+```go config.go
+func splitCSVEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+```
+
+<Steps>
+  <Step title="Configuration Loading">
+    RiftRelay reads the `RIOT_TOKEN` environment variable and splits it by commas.
+  </Step>
+  
+  <Step title="Token Storage">
+    Each token is stored in the configuration with its own index (0, 1, 2, etc.).
+  </Step>
+  
+  <Step title="Request Distribution">
+    When a request arrives, RiftRelay selects the token with the earliest available capacity.
+  </Step>
+  
+  <Step title="Independent Rate Limits">
+    Each token maintains its own rate limit state for both app-level and method-level limits.
+  </Step>
+</Steps>
+
+## Token Selection Logic
+
+From `internal/limiter/limiter.go`, RiftRelay picks the best available token:
+
+```go limiter.go
+func (l *Limiter) pickKey(now time.Time, keys []keyState, region, bucket string, priority Priority) (int, time.Time) {
+	bestIndex := -1
+	bestAt := time.Time{}
+	bypassPacing := priority == PriorityHigh
+
+	for i := range keys {
+		key := &keys[i]
+		appAt := key.app(region, now, l.cfg.AdditionalWindow).nextAllowed(now, bypassPacing)
+		methodAt := key.method(bucket, now, l.cfg.AdditionalWindow).nextAllowed(now, bypassPacing)
+		readyAt := appAt
+		if methodAt.After(readyAt) {
+			readyAt = methodAt
+		}
+
+		if bestIndex < 0 || readyAt.Before(bestAt) {
+			bestIndex = i
+			bestAt = readyAt
+		}
+	}
+
+	return bestIndex, bestAt
+}
+```
+
+**Selection criteria:**
+1. Check each token's availability for the requested region and API bucket
+2. Calculate when each token will next have capacity
+3. Select the token that can send the request soonest
+4. Return the token index and ready time
+
+<Info>
+RiftRelay automatically balances load based on real-time rate limit states, not round-robin. This ensures optimal token utilization.
+</Info>
+
+## Token Assignment to Requests
+
+Once a token is selected, it's attached to the request in `internal/proxy/proxy.go`:
+
+```go proxy.go
+rewrite := func(preq *httputil.ProxyRequest) {
+	info, ok := router.PathFromContext(preq.In.Context())
+	if !ok {
+		if parsed, err := router.ParsePath(preq.In.URL.Path); err == nil {
+			info = parsed
+		} else {
+			return
+		}
+	}
+
+	host := info.Region + ".api.riotgames.com"
+
+	preq.Out.URL.Scheme = "https"
+	preq.Out.URL.Host = host
+	preq.Out.Host = host
+	preq.Out.URL.Path = info.UpstreamPath
+
+	keyIndex := 0
+	if value, ok := keyIndexFromContext(preq.In.Context()); ok && value >= 0 && value < len(o.apiTokens) {
+		keyIndex = value
+	}
+	if len(o.apiTokens) > 0 {
+		preq.Out.Header.Set("X-Riot-Token", o.apiTokens[keyIndex])
+	}
+	preq.Out.Header.Set("Accept-Encoding", "gzip")
+	preq.SetXForwarded()
+}
+```
+
+The selected token is added to the request as the `X-Riot-Token` header before proxying to Riot's API.
+
+## Rate Limit Tracking
+
+Each token maintains independent rate limit state:
+
+```go limiter.go
+func (l *Limiter) loop() {
+	keys := make([]keyState, l.cfg.KeyCount)
+	defaultApp := parseRateHeader(l.cfg.DefaultAppLimits, "")
+	for i := range keys {
+		keys[i] = newKeyState(defaultApp)
+	}
+	// ...
+}
+```
+
+**Each key (token) tracks:**
+- Application-level rate limits (per region)
+- Method-level rate limits (per API endpoint)
+- Current usage and remaining capacity
+- Next available time for requests
+
+## Throughput Calculation
+
+With multiple tokens, your effective rate limit is multiplied:
+
+<Accordion title="Example: 3 Tokens">
+
+**Single token limits (typical Production API key):**
+- 20 requests per second
+- 100 requests per 2 minutes
+
+**With 3 tokens:**
+- 60 requests per second (3 × 20)
+- 300 requests per 2 minutes (3 × 100)
+
+**Real-world throughput example:**
+```bash
+# Single token
+20 req/s × 3600s = 72,000 requests per hour
+
+# Three tokens
+60 req/s × 3600s = 216,000 requests per hour
+```
+
+</Accordion>
+
+<Accordion title="Example: 5 Tokens">
+
+**Single token limits:**
+- 20 requests per second
+- 100 requests per 2 minutes
+
+**With 5 tokens:**
+- 100 requests per second (5 × 20)
+- 500 requests per 2 minutes (5 × 100)
+
+**Real-world throughput example:**
+```bash
+# Single token
+20 req/s × 3600s = 72,000 requests per hour
+
+# Five tokens
+100 req/s × 3600s = 360,000 requests per hour
+```
+
+</Accordion>
+
+## Monitoring Token Usage
+
+Enable metrics to monitor token distribution:
+
+```bash .env
+ENABLE_METRICS=true
+```
+
+View metrics at `http://localhost:8985/metrics`:
+
+```bash
+curl http://localhost:8985/metrics | grep riftrelay
+```
+
+Metrics include:
+- Request admission rate by outcome
+- Queue depth per bucket and priority
+- Upstream response times and status codes
+
+<Tip>
+If one token is consistently hitting limits while others are idle, check that all tokens have the same API key tier (Development vs Production).
+</Tip>
+
+## Best Practices
+
+<AccordionGroup>
+
+<Accordion title="Use Matching Token Tiers" icon="equals">
+  All tokens should be the same tier (all Production or all Development). Mixing tiers can lead to unbalanced load distribution.
+  
+  ```bash Good
+  # All Production keys
+  RIOT_TOKEN=RGAPI-prod1,RGAPI-prod2,RGAPI-prod3
+  ```
+  
+  ```bash Avoid
+  # Mixed tiers
+  RIOT_TOKEN=RGAPI-dev1,RGAPI-prod1,RGAPI-dev2
+  ```
+</Accordion>
+
+<Accordion title="Start with 2-3 Tokens" icon="arrow-up-right-dots">
+  Begin with 2-3 tokens and scale up based on actual throughput needs. More tokens doesn't always mean better performance if your traffic is low.
+</Accordion>
+
+<Accordion title="Increase Queue Capacity" icon="list">
+  With multiple tokens, you can handle more concurrent requests. Increase `QUEUE_CAPACITY` accordingly:
+  
+  ```bash .env
+  # Single token
+  QUEUE_CAPACITY=2048
+  
+  # Three tokens
+  QUEUE_CAPACITY=6144
+  
+  # Five tokens
+  QUEUE_CAPACITY=10240
+  ```
+</Accordion>
+
+<Accordion title="Rotate Tokens Safely" icon="rotate">
+  To rotate tokens without downtime:
+  1. Add new token to the comma-separated list
+  2. Restart RiftRelay
+  3. Verify the new token is being used (check metrics)
+  4. Remove the old token from the list
+  5. Restart again
+</Accordion>
+
+</AccordionGroup>
+
+## Validation
+
+From `internal/config/config.go`, token validation happens at startup:
+
+```go config.go
+func Load() (Config, error) {
+	var errs []error
+
+	tokens := splitCSVEnv("RIOT_TOKEN")
+	if len(tokens) == 0 {
+		errs = append(errs, fmt.Errorf("RIOT_TOKEN env var is required"))
+	} else {
+		cfg.Tokens = tokens
+	}
+	
+	if cfg.KeyCount <= 0 {
+		return nil, fmt.Errorf("KeyCount must be > 0")
+	}
+	
+	// ... other validation
+}
+```
+
+**Validation checks:**
+- At least one token must be provided
+- Empty strings in the comma-separated list are filtered out
+- Token count must be greater than zero
+
+## Common Issues
+
+<AccordionGroup>
+
+<Accordion title="Tokens are not comma-separated correctly" icon="triangle-exclamation">
+  **Problem:** Only the first token is recognized.
+  
+  **Solution:** Ensure commas separate tokens with no quotes around individual tokens:
+  ```bash
+  # Correct
+  RIOT_TOKEN=token1,token2,token3
+  
+  # Incorrect
+  RIOT_TOKEN="token1","token2","token3"
+  ```
+</Accordion>
+
+<Accordion title="One token has different rate limits" icon="scale-unbalanced">
+  **Problem:** Uneven distribution with one token always hitting limits.
+  
+  **Solution:** Verify all tokens are the same tier. Check each token individually:
+  ```bash
+  curl -H "X-Riot-Token: RGAPI-token1" \
+    "https://europe.api.riotgames.com/riot/account/v1/accounts/by-riot-id/Test/EUW1"
+  ```
+  
+  Look for `X-App-Rate-Limit` header in the response to confirm rate limits.
+</Accordion>
+
+<Accordion title="All tokens hitting limits simultaneously" icon="gauge-max">
+  **Problem:** Even with multiple tokens, you're getting 429 errors.
+  
+  **Solution:** You may have exceeded the combined capacity. Options:
+  1. Add more tokens
+  2. Increase `QUEUE_CAPACITY` to buffer more requests
+  3. Reduce request rate
+  4. Use [priority requests](/guides/priority-requests) for critical operations only
+</Accordion>
+
+</AccordionGroup>
+
+## Example: Complete Setup
+
+Here's a complete configuration for high-throughput production use:
+
+```bash .env
+# Five production API tokens for maximum throughput
+RIOT_TOKEN=RGAPI-11111111-1111-1111-1111-111111111111,RGAPI-22222222-2222-2222-2222-222222222222,RGAPI-33333333-3333-3333-3333-333333333333,RGAPI-44444444-4444-4444-4444-444444444444,RGAPI-55555555-5555-5555-5555-555555555555
+
+# High queue capacity for multiple tokens
+QUEUE_CAPACITY=10240
+
+# Extended admission timeout for high-volume scenarios
+ADMISSION_TIMEOUT=10m
+
+# Enable monitoring
+ENABLE_METRICS=true
+ENABLE_SWAGGER=true
+
+# Standard port
+PORT=8985
+
+# Graceful shutdown with drain period
+SHUTDOWN_TIMEOUT=30s
+```
+
+## Performance Impact
+
+<CardGroup cols={3}>
+  <Card title="1 Token" icon="1">
+    **Baseline**
+    - 20 req/s
+    - 72K req/hour
+  </Card>
+  <Card title="3 Tokens" icon="3">
+    **3x throughput**
+    - 60 req/s
+    - 216K req/hour
+  </Card>
+  <Card title="5 Tokens" icon="5">
+    **5x throughput**
+    - 100 req/s
+    - 360K req/hour
+  </Card>
+</CardGroup>
+
+<Note>
+Actual throughput depends on your API key tier, endpoint-specific rate limits, and request distribution across regions and methods.
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Priority Requests" icon="bolt" href="/guides/priority-requests">
+    Combine multiple tokens with priority requests for optimal performance
+  </Card>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Fine-tune queue capacity and timeouts for your token count
+  </Card>
+</CardGroup>

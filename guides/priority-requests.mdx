@@ -1,0 +1,302 @@
+---
+title: "Priority Requests"
+description: "Send time-sensitive requests that bypass pacing delays"
+icon: "bolt"
+---
+
+## What are Priority Requests?
+
+By default, RiftRelay spreads requests evenly across the rate limit window to avoid bursts. Priority requests allow you to bypass this pacing delay for time-sensitive operations while still respecting rate limits.
+
+<Info>
+Priority requests skip the pacing delay but still consume rate limit capacity. They do not bypass Riot's rate limits.
+</Info>
+
+## When to Use Priority Requests
+
+Use priority requests for:
+
+<CardGroup cols={2}>
+  <Card title="Real-time Data" icon="clock">
+    Live game data or match updates that need immediate processing
+  </Card>
+  <Card title="User-facing Requests" icon="user">
+    API calls triggered directly by user actions where latency matters
+  </Card>
+  <Card title="Critical Operations" icon="triangle-exclamation">
+    Time-sensitive operations that cannot wait in the queue
+  </Card>
+  <Card title="Low-volume Priority" icon="filter">
+    Occasional high-priority requests mixed with bulk processing
+  </Card>
+</CardGroup>
+
+<Warning>
+Don't use priority requests for all traffic. Overusing priority bypasses the benefits of request pacing and may lead to more rejected requests.
+</Warning>
+
+## How to Send Priority Requests
+
+Add the `X-Priority: high` header to your request:
+
+<CodeGroup>
+
+```bash curl
+curl -H "X-Priority: high" \
+  "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+```
+
+```javascript JavaScript
+fetch('http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1', {
+  headers: {
+    'X-Priority': 'high'
+  }
+});
+```
+
+```python Python
+import requests
+
+response = requests.get(
+    'http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1',
+    headers={'X-Priority': 'high'}
+)
+```
+
+```go Go
+req, _ := http.NewRequest(
+    "GET",
+    "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1",
+    nil,
+)
+req.Header.Set("X-Priority", "high")
+client := &http.Client{}
+resp, _ := client.Do(req)
+```
+
+</CodeGroup>
+
+## How Priority Works
+
+From the source code in `internal/limiter/limiter.go`:
+
+```go limiter.go
+func (l *Limiter) pickKey(now time.Time, keys []keyState, region, bucket string, priority Priority) (int, time.Time) {
+	bestIndex := -1
+	bestAt := time.Time{}
+	bypassPacing := priority == PriorityHigh
+
+	for i := range keys {
+		key := &keys[i]
+		appAt := key.app(region, now, l.cfg.AdditionalWindow).nextAllowed(now, bypassPacing)
+		methodAt := key.method(bucket, now, l.cfg.AdditionalWindow).nextAllowed(now, bypassPacing)
+		readyAt := appAt
+		if methodAt.After(readyAt) {
+			readyAt = methodAt
+		}
+
+		if bestIndex < 0 || readyAt.Before(bestAt) {
+			bestIndex = i
+			bestAt = readyAt
+		}
+	}
+
+	return bestIndex, bestAt
+}
+```
+
+<Steps>
+  <Step title="Priority Detection">
+    RiftRelay detects the `X-Priority: high` header and marks the request as high priority.
+  </Step>
+  
+  <Step title="Bypass Pacing">
+    The `bypassPacing` flag skips the even distribution delay that normal requests experience.
+  </Step>
+  
+  <Step title="Rate Limit Check">
+    The request still checks against application and method rate limits.
+  </Step>
+  
+  <Step title="Immediate or Queue">
+    If rate limit capacity exists, the request is sent immediately. Otherwise, it waits at the front of the priority queue.
+  </Step>
+</Steps>
+
+## Priority Levels
+
+RiftRelay supports two priority levels defined in `internal/limiter/types.go`:
+
+```go types.go
+type Priority uint8
+
+const (
+	PriorityNormal Priority = iota
+	PriorityHigh
+)
+```
+
+- **PriorityNormal** - Default priority with pacing delay
+- **PriorityHigh** - Bypasses pacing delay
+
+## Comparison: Normal vs Priority
+
+### Normal Request
+
+```bash
+curl "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+```
+
+**Behavior:**
+- Enters the normal priority queue
+- Waits for pacing delay to spread requests evenly
+- Sent when the next scheduled slot is available
+- Lower latency impact on other requests
+
+### Priority Request
+
+```bash
+curl -H "X-Priority: high" \
+  "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+```
+
+**Behavior:**
+- Enters the high priority queue
+- Bypasses pacing delay
+- Sent as soon as rate limit capacity allows
+- Minimal latency for this specific request
+
+<Note>
+Both types still respect the same rate limits from Riot's API. Priority affects queue position and pacing, not rate limit consumption.
+</Note>
+
+## Queue Behavior
+
+From `internal/limiter/limiter.go`, RiftRelay maintains separate queues:
+
+```go limiter.go
+type bucketQueue struct {
+	region    string
+	bucket    string
+	high      []*admitRequest  // High priority queue
+	normal    []*admitRequest  // Normal priority queue
+	heapIndex int
+}
+```
+
+High priority requests are always processed before normal priority requests from the same bucket.
+
+## Best Practices
+
+<AccordionGroup>
+
+<Accordion title="Use Sparingly" icon="lightbulb">
+  Reserve priority requests for truly time-sensitive operations. If 90%+ of your requests are priority, you're bypassing the benefits of request pacing.
+</Accordion>
+
+<Accordion title="Monitor Queue Depth" icon="chart-line">
+  Enable metrics to monitor queue depth by priority:
+  
+  ```bash .env
+  ENABLE_METRICS=true
+  ```
+  
+  If priority queues are consistently full, you may need to increase capacity or reduce priority usage.
+</Accordion>
+
+<Accordion title="Combine with Multiple Tokens" icon="layer-group">
+  Using [multiple tokens](/guides/multiple-tokens) increases total throughput, giving priority requests more capacity to work with.
+</Accordion>
+
+<Accordion title="Handle Rejection Gracefully" icon="circle-xmark">
+  Priority requests can still be rejected if rate limits are exhausted. Always handle 429 responses and respect `Retry-After` headers:
+  
+  ```javascript
+  const response = await fetch(url, {
+    headers: { 'X-Priority': 'high' }
+  });
+  
+  if (response.status === 429) {
+    const retryAfter = response.headers.get('Retry-After');
+    // Wait and retry after the specified duration
+  }
+  ```
+</Accordion>
+
+</AccordionGroup>
+
+## Rate Limiting Behavior
+
+From the README, here's how RiftRelay handles rate limits:
+
+> When requests come in, RiftRelay figures out which rate limit bucket they belong to and adds them to a queue. A scheduler picks requests from the queue and sends them when there's room in the rate limit window. Instead of sending all requests at once when the limit resets, RiftRelay spreads them out evenly over time to avoid sudden bursts.
+
+Priority requests modify this behavior:
+
+- **Normal requests:** Spread evenly across the rate limit window
+- **Priority requests:** Sent as soon as capacity allows, no artificial pacing delay
+- **Both types:** Respect the same rate limit capacity from Riot's API
+
+## Example Scenario
+
+Imagine you're building an app that:
+1. Processes bulk match history analysis (background job)
+2. Displays live game data when users click a button (user-facing)
+
+```javascript Example Implementation
+// Background job - normal priority
+async function analyzeBulkMatches(matchIds) {
+  for (const matchId of matchIds) {
+    const response = await fetch(
+      `http://localhost:8985/europe/lol/match/v5/matches/${matchId}`
+      // No X-Priority header - uses normal queue
+    );
+    await processMatchData(await response.json());
+  }
+}
+
+// User-facing request - high priority
+async function fetchLiveGame(summonerId) {
+  const response = await fetch(
+    `http://localhost:8985/na1/lol/spectator/v4/active-games/by-summoner/${summonerId}`,
+    {
+      headers: { 'X-Priority': 'high' }
+    }
+  );
+  
+  if (response.status === 429) {
+    const retryAfter = parseInt(response.headers.get('Retry-After'));
+    await new Promise(resolve => setTimeout(resolve, retryAfter * 1000));
+    return fetchLiveGame(summonerId); // Retry
+  }
+  
+  return response.json();
+}
+```
+
+## Limitations
+
+<Warning>
+**Priority requests do NOT:**
+- Increase your rate limit quota
+- Guarantee instant delivery (still subject to rate limits)
+- Prevent 429 errors if limits are exhausted
+- Override Riot's rate limiting
+
+**Priority requests DO:**
+- Skip artificial pacing delays
+- Get processed before normal requests in the same bucket
+- Reduce latency for time-sensitive operations
+- Respect the same rate limit capacity
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Multiple Tokens" icon="layer-group" href="/guides/multiple-tokens">
+    Increase throughput with multiple API tokens
+  </Card>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Tune queue capacity and timeouts
+  </Card>
+</CardGroup>

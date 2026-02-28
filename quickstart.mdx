@@ -1,80 +1,136 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get RiftRelay running in under 2 minutes
 ---
 
-## Get started in three steps
+## Quick start with Docker
 
-Get your documentation site running locally and make your first customization.
+The fastest way to get RiftRelay running is using the one-line Docker setup script:
 
-### Step 1: Set up your local environment
+<Steps>
+  <Step title="Run the setup script">
+    Execute the following command in your terminal:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    curl -fsSL "https://raw.githubusercontent.com/renja-g/RiftRelay/main/scripts/setup-docker-stack.sh" | bash
+    ```
 
-### Step 2: Deploy your changes
+    The script will:
+    - Download the necessary Docker configuration files
+    - Prompt you for your Riot API token
+    - Start RiftRelay automatically
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    <Info>
+      Pre-built Docker images are available on [Docker Hub](https://hub.docker.com/r/renjag/riftrelay)
+    </Info>
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Verify it's running">
+    Check that RiftRelay is healthy:
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```bash
+    curl http://localhost:8985/healthz
+    ```
 
-### Step 3: Go live
+    You should see a `200 OK` response.
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Make your first request">
+    Send a request through RiftRelay using the format `/{region}/{riot-api-path}`:
+
+    ```bash
+    curl "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+    ```
+
+    <Note>
+      Replace `Someone/EUW1` with an actual Riot ID and tagline to test with real data
+    </Note>
+
+    RiftRelay will proxy this request to Riot's API while managing rate limits automatically.
+  </Step>
+
+  <Step title="Explore the Swagger UI">
+    Open your browser and navigate to:
+
+    ```
+    http://localhost:8985/swagger/
+    ```
+
+    The Swagger UI lets you explore all available Riot API endpoints and send test requests interactively.
+
+    <Tip>
+      The Swagger UI is enabled by default. You can disable it by setting `ENABLE_SWAGGER=false` in your environment
+    </Tip>
+  </Step>
+</Steps>
+
+## Understanding the request format
+
+RiftRelay uses a simple URL pattern:
+
+```
+http://localhost:8985/{region}/{riot-api-path}
+```
+
+- **region**: The Riot API region (e.g., `europe`, `americas`, `asia`, `sea`)
+- **riot-api-path**: The Riot API endpoint path without the base URL
+
+### Examples
+
+<CodeGroup>
+```bash Account by Riot ID
+curl "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/PlayerName/TAG"
+```
+
+```bash Summoner by name
+curl "http://localhost:8985/euw1/lol/summoner/v4/summoners/by-name/PlayerName"
+```
+
+```bash Match details
+curl "http://localhost:8985/europe/lol/match/v5/matches/EUW1_1234567890"
+```
+</CodeGroup>
+
+## Priority requests
+
+By default, RiftRelay paces requests evenly across the rate limit window. For time-sensitive requests, you can bypass the pacing delay (while still respecting rate limits) using the `X-Priority: high` header:
+
+```bash
+curl -H "X-Priority: high" "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+```
+
+<Warning>
+  Priority requests bypass pacing delays but still respect rate limits. If the rate limit is exhausted, you'll receive a `429 Too Many Requests` response regardless of priority
+</Warning>
+
+## What happens under the hood
+
+When you send a request to RiftRelay:
+
+1. RiftRelay determines the rate limit bucket based on the endpoint and region
+2. Your request enters a queue (default capacity: 2048 requests)
+3. The scheduler picks requests from the queue and sends them to Riot's API when capacity is available
+4. Rate limits are tracked based on response headers from Riot
+5. Requests are spread evenly across the rate limit window to avoid bursts
+
+If there's no capacity in the rate limit window:
+- You receive a `429 Too Many Requests` response
+- The `Retry-After` header tells you when to retry (in seconds)
+- The request is not sent to Riot's API
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation options" icon="download" href="/installation">
+    Learn about Docker Compose and running from source
+  </Card>
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Customize queue capacity, timeouts, and enable metrics
+  </Card>
+  <Card title="Multiple tokens" icon="key" href="/guides/multiple-tokens">
+    Use multiple Riot API tokens to increase rate limits
+  </Card>
+  <Card title="API reference" icon="code" href="/api/proxy-endpoint">
+    Explore all available endpoints and options
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

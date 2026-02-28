@@ -1,0 +1,344 @@
+---
+title: Environment Variables
+description: Complete reference for configuring RiftRelay via environment variables
+---
+
+RiftRelay is configured entirely through environment variables. All variables are optional except for `RIOT_TOKEN`.
+
+## Required
+
+<ParamField path="RIOT_TOKEN" type="string" required>
+  Your Riot Games API token(s). Multiple tokens can be provided as a comma-separated list for load balancing.
+  
+  ```bash
+  RIOT_TOKEN=RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  # Multiple tokens
+  RIOT_TOKEN=RGAPI-token1,RGAPI-token2,RGAPI-token3
+  ```
+  
+  <Note>
+    Whitespace around tokens is automatically trimmed. Each token is validated during startup.
+  </Note>
+</ParamField>
+
+## Server Configuration
+
+<ParamField path="PORT" type="int" default="8985">
+  The port number on which RiftRelay listens for incoming HTTP requests.
+  
+  **Validation**: Must be between 1 and 65535
+  
+  ```bash
+  PORT=8080
+  ```
+</ParamField>
+
+<ParamField path="SERVER_READ_HEADER_TIMEOUT" type="duration" default="10s">
+  Maximum duration for reading request headers.
+  
+  ```bash
+  SERVER_READ_HEADER_TIMEOUT=15s
+  ```
+</ParamField>
+
+<ParamField path="SERVER_READ_TIMEOUT" type="duration" default="10s">
+  Maximum duration for reading the entire request, including the body.
+  
+  ```bash
+  SERVER_READ_TIMEOUT=30s
+  ```
+</ParamField>
+
+<ParamField path="SERVER_WRITE_TIMEOUT" type="duration" default="5m">
+  Maximum duration before timing out writes of the response.
+  
+  ```bash
+  SERVER_WRITE_TIMEOUT=10m
+  ```
+</ParamField>
+
+<ParamField path="SERVER_IDLE_TIMEOUT" type="duration" default="90s">
+  Maximum duration to wait for the next request when keep-alives are enabled.
+  
+  ```bash
+  SERVER_IDLE_TIMEOUT=120s
+  ```
+</ParamField>
+
+<ParamField path="SHUTDOWN_TIMEOUT" type="duration" default="20s">
+  Maximum duration to wait for graceful shutdown before forcefully terminating.
+  
+  ```bash
+  SHUTDOWN_TIMEOUT=30s
+  ```
+  
+  <Note>
+    During graceful shutdown, RiftRelay stops accepting new requests and waits for in-flight requests to complete.
+  </Note>
+</ParamField>
+
+## Queue and Admission Control
+
+<ParamField path="QUEUE_CAPACITY" type="int" default="2048">
+  Maximum number of requests that can be queued while waiting for rate limit availability.
+  
+  **Validation**: Must be >= 1
+  
+  ```bash
+  QUEUE_CAPACITY=4096
+  ```
+</ParamField>
+
+<ParamField path="ADMISSION_TIMEOUT" type="duration" default="5m">
+  Maximum duration a request can wait in the queue before timing out.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  ADMISSION_TIMEOUT=10m
+  ```
+  
+  <Warning>
+    If the queue is full or admission timeout is exceeded, requests will be rejected with a 503 Service Unavailable error.
+  </Warning>
+</ParamField>
+
+<ParamField path="ADDITIONAL_WINDOW_SIZE" type="duration" default="150ms">
+  Additional time buffer added to rate limit windows to prevent premature bucket expiration.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  ADDITIONAL_WINDOW_SIZE=200ms
+  ```
+  
+  <Note>
+    This helps account for clock skew and network latency between RiftRelay and Riot's servers.
+  </Note>
+</ParamField>
+
+## Rate Limiting
+
+<ParamField path="DEFAULT_APP_RATE_LIMIT" type="string" default="20:1,100:120">
+  Default application-level rate limits when not specified in Riot API response headers. Format is `limit:window` pairs separated by commas.
+  
+  **Format**: `requests:seconds,requests:seconds`
+  
+  **Validation**: Each limit and window must be positive integers
+  
+  ```bash
+  # 20 requests per second, 100 requests per 2 minutes
+  DEFAULT_APP_RATE_LIMIT=20:1,100:120
+  
+  # Custom limits
+  DEFAULT_APP_RATE_LIMIT=50:10,500:600
+  ```
+  
+  <Note>
+    This is a fallback only. RiftRelay primarily uses rate limits from Riot's `X-App-Rate-Limit` and `X-Method-Rate-Limit` headers.
+  </Note>
+</ParamField>
+
+## Upstream Transport
+
+Configuration for the HTTP client used to communicate with Riot's API servers.
+
+<ParamField path="UPSTREAM_TIMEOUT" type="duration" default="0">
+  Overall timeout for upstream requests to Riot API. A value of 0 means no timeout.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  UPSTREAM_TIMEOUT=30s
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_MAX_IDLE_CONNS" type="int" default="512">
+  Maximum number of idle connections across all hosts.
+  
+  **Validation**: Must be >= 1
+  
+  ```bash
+  TRANSPORT_MAX_IDLE_CONNS=1024
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_MAX_IDLE_CONNS_PER_HOST" type="int" default="256">
+  Maximum number of idle connections to keep per host.
+  
+  **Validation**: Must be >= 1
+  
+  ```bash
+  TRANSPORT_MAX_IDLE_CONNS_PER_HOST=512
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_MAX_CONNS_PER_HOST" type="int" default="0">
+  Maximum number of total connections per host. A value of 0 means no limit.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  TRANSPORT_MAX_CONNS_PER_HOST=1000
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_IDLE_CONN_TIMEOUT" type="duration" default="90s">
+  Maximum duration an idle connection will remain open before being closed.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  TRANSPORT_IDLE_CONN_TIMEOUT=120s
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_TLS_HANDSHAKE_TIMEOUT" type="duration" default="10s">
+  Maximum duration to wait for a TLS handshake to complete.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  TRANSPORT_TLS_HANDSHAKE_TIMEOUT=15s
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_EXPECT_CONTINUE_TIMEOUT" type="duration" default="1s">
+  Maximum duration to wait for a server's first response headers after sending request headers with `Expect: 100-continue`.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  TRANSPORT_EXPECT_CONTINUE_TIMEOUT=2s
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_DIAL_TIMEOUT" type="duration" default="5s">
+  Maximum duration to wait for a dial to complete.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  TRANSPORT_DIAL_TIMEOUT=10s
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_DIAL_KEEP_ALIVE" type="duration" default="30s">
+  Interval between keep-alive probes for an active network connection.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  TRANSPORT_DIAL_KEEP_ALIVE=60s
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_RESPONSE_HEADER_TIMEOUT" type="duration" default="15s">
+  Maximum duration to wait for a server's response headers after fully writing the request.
+  
+  **Validation**: Must be >= 0
+  
+  ```bash
+  TRANSPORT_RESPONSE_HEADER_TIMEOUT=30s
+  ```
+</ParamField>
+
+<ParamField path="TRANSPORT_FORCE_HTTP2" type="boolean" default="true">
+  Whether to force HTTP/2 for upstream connections when available.
+  
+  ```bash
+  TRANSPORT_FORCE_HTTP2=false
+  ```
+</ParamField>
+
+## Features
+
+<ParamField path="ENABLE_METRICS" type="boolean" default="false">
+  Enable Prometheus metrics endpoint at `/metrics`.
+  
+  ```bash
+  ENABLE_METRICS=true
+  ```
+  
+  <Note>
+    When enabled, metrics include request counts, latencies, queue depths, and rate limit bucket states.
+  </Note>
+</ParamField>
+
+<ParamField path="ENABLE_PPROF" type="boolean" default="false">
+  Enable pprof profiling endpoints at `/debug/pprof/*`.
+  
+  ```bash
+  ENABLE_PPROF=true
+  ```
+  
+  <Warning>
+    Only enable in development or debugging scenarios. Pprof endpoints expose sensitive runtime information.
+  </Warning>
+</ParamField>
+
+<ParamField path="ENABLE_SWAGGER" type="boolean" default="true">
+  Enable Swagger UI documentation at `/swagger/*`.
+  
+  ```bash
+  ENABLE_SWAGGER=false
+  ```
+</ParamField>
+
+## Duration Format
+
+All duration values use Go's duration format:
+
+- `ns` - nanoseconds
+- `us` or `µs` - microseconds
+- `ms` - milliseconds
+- `s` - seconds
+- `m` - minutes
+- `h` - hours
+
+Examples: `500ms`, `2s`, `5m`, `1h30m`
+
+<Accordion title="Example .env file">
+```bash
+# Required
+RIOT_TOKEN=RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+# Server
+PORT=8985
+SERVER_READ_TIMEOUT=30s
+SERVER_WRITE_TIMEOUT=10m
+SHUTDOWN_TIMEOUT=30s
+
+# Queue
+QUEUE_CAPACITY=4096
+ADMISSION_TIMEOUT=10m
+ADDITIONAL_WINDOW_SIZE=200ms
+
+# Rate Limiting
+DEFAULT_APP_RATE_LIMIT=20:1,100:120
+
+# Transport
+TRANSPORT_MAX_IDLE_CONNS=1024
+TRANSPORT_MAX_IDLE_CONNS_PER_HOST=512
+UPSTREAM_TIMEOUT=30s
+
+# Features
+ENABLE_METRICS=true
+ENABLE_PPROF=false
+ENABLE_SWAGGER=true
+```
+</Accordion>
+
+## Validation Rules
+
+<Note>
+Configuration is validated at startup. RiftRelay will fail to start and print all validation errors if any configuration values are invalid.
+</Note>
+
+- **Integers**: Must be valid integer values within their specified ranges
+- **Durations**: Must use valid Go duration format (e.g., `150ms`, `2s`, `5m`)
+- **Booleans**: Accepts `true`, `false`, `1`, `0`, `t`, `f`, `T`, `F` (case-insensitive)
+- **Rate Limits**: Must follow `limit:window,limit:window` format with positive integers
+- **PORT**: Must be between 1 and 65535
+
+All validation errors are collected and reported together during startup for easier troubleshooting.

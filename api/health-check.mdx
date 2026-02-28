@@ -1,0 +1,245 @@
+---
+title: 'Health Check'
+description: 'Monitor RiftRelay service availability'
+---
+
+## Overview
+
+The health check endpoint provides a simple way to verify that RiftRelay is running and ready to accept requests. This endpoint is primarily used by Docker health checks and monitoring systems.
+
+## Endpoint
+
+```
+GET /healthz
+```
+
+## Authentication
+
+No authentication required. This endpoint is publicly accessible.
+
+## Response
+
+### Success Response
+
+**Status**: `204 No Content`
+
+An empty response with a 204 status code indicates the service is healthy and operational.
+
+```bash
+HTTP/1.1 204 No Content
+Date: Sat, 28 Feb 2026 12:00:00 GMT
+```
+
+## Use Cases
+
+### Docker Health Check
+
+RiftRelay's official Docker image includes a built-in health check that uses this endpoint:
+
+```dockerfile
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+    CMD wget --spider -q "http://127.0.0.1:${PORT:-8985}/healthz" || exit 1
+```
+
+Source: `Dockerfile:33-34`
+
+**Configuration**:
+- **Interval**: Health check runs every 15 seconds
+- **Timeout**: 3 seconds maximum response time
+- **Start Period**: 20 seconds grace period during container startup
+- **Retries**: 3 consecutive failures mark container as unhealthy
+
+### Kubernetes Probes
+
+Configure liveness and readiness probes:
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: riftrelay
+spec:
+  containers:
+  - name: riftrelay
+    image: renjag/riftrelay:latest
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: 8985
+      initialDelaySeconds: 20
+      periodSeconds: 15
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: 8985
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 3
+```
+
+### Load Balancer Health Checks
+
+Configure your load balancer to monitor RiftRelay availability:
+
+**AWS Application Load Balancer**:
+```json
+{
+  "HealthCheckEnabled": true,
+  "HealthCheckPath": "/healthz",
+  "HealthCheckIntervalSeconds": 30,
+  "HealthCheckTimeoutSeconds": 5,
+  "HealthyThresholdCount": 2,
+  "UnhealthyThresholdCount": 3
+}
+```
+
+**NGINX Upstream Health Check**:
+```nginx
+upstream riftrelay {
+    server riftrelay-1:8985;
+    server riftrelay-2:8985;
+    
+    check interval=3000 rise=2 fall=3 timeout=1000 type=http;
+    check_http_send "GET /healthz HTTP/1.0\r\n\r\n";
+    check_http_expect_alive http_2xx;
+}
+```
+
+### Monitoring Scripts
+
+Simple availability monitoring:
+
+<CodeGroup>
+```bash Shell Script
+#!/bin/bash
+if curl -sf http://localhost:8985/healthz > /dev/null; then
+    echo "RiftRelay is healthy"
+    exit 0
+else
+    echo "RiftRelay is down"
+    exit 1
+fi
+```
+
+```python Python
+import requests
+import sys
+
+try:
+    response = requests.get("http://localhost:8985/healthz", timeout=3)
+    if response.status_code == 204:
+        print("RiftRelay is healthy")
+        sys.exit(0)
+    else:
+        print(f"RiftRelay returned unexpected status: {response.status_code}")
+        sys.exit(1)
+except requests.exceptions.RequestException as e:
+    print(f"RiftRelay health check failed: {e}")
+    sys.exit(1)
+```
+
+```javascript Node.js
+const http = require('http');
+
+const options = {
+  hostname: 'localhost',
+  port: 8985,
+  path: '/healthz',
+  method: 'GET',
+  timeout: 3000
+};
+
+const req = http.request(options, (res) => {
+  if (res.statusCode === 204) {
+    console.log('RiftRelay is healthy');
+    process.exit(0);
+  } else {
+    console.log(`RiftRelay returned unexpected status: ${res.statusCode}`);
+    process.exit(1);
+  }
+});
+
+req.on('error', (error) => {
+  console.error(`RiftRelay health check failed: ${error.message}`);
+  process.exit(1);
+});
+
+req.on('timeout', () => {
+  req.destroy();
+  console.error('RiftRelay health check timed out');
+  process.exit(1);
+});
+
+req.end();
+```
+</CodeGroup>
+
+## Examples
+
+### Basic Health Check
+
+```bash
+curl -i http://localhost:8985/healthz
+```
+
+**Response**:
+```
+HTTP/1.1 204 No Content
+Date: Sat, 28 Feb 2026 12:00:00 GMT
+```
+
+### Silent Check (Exit Code Only)
+
+```bash
+curl -sf http://localhost:8985/healthz && echo "Healthy" || echo "Unhealthy"
+```
+
+### With Custom Port
+
+If you've configured RiftRelay with a different port:
+
+```bash
+curl http://localhost:9000/healthz
+```
+
+### Docker Container Health Check
+
+Check health status of a running container:
+
+```bash
+docker inspect --format='{{.State.Health.Status}}' riftrelay
+```
+
+**Output**:
+```
+healthy
+```
+
+View health check logs:
+
+```bash
+docker inspect --format='{{range .State.Health.Log}}{{.Output}}{{end}}' riftrelay
+```
+
+## Implementation Details
+
+The health check handler is registered in the server initialization and returns a 204 No Content status with an empty body.
+
+Source: `internal/app/server.go:58-60`
+
+```go
+mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+    w.WriteHeader(http.StatusNoContent)
+})
+```
+
+<Note>
+  The health check endpoint only verifies that the HTTP server is responding. It does not check upstream Riot API connectivity or rate limiter status. For more detailed monitoring, use the [Metrics](/api/metrics) endpoint.
+</Note>
+
+## Related Endpoints
+
+- [Metrics](/api/metrics) - Detailed operational metrics
+- [Proxy Endpoint](/api/proxy-endpoint) - Main API proxy interface

@@ -1,0 +1,430 @@
+---
+title: 'Profiling Endpoints'
+description: 'Go pprof profiling endpoints for performance analysis'
+---
+
+## Overview
+
+RiftRelay exposes Go's built-in `pprof` profiling endpoints for performance analysis and debugging. These endpoints provide detailed runtime information including heap usage, goroutine stacks, CPU profiles, and more.
+
+<Warning>
+  Profiling endpoints are **disabled by default** and should **only be enabled in development** environments. Enabling pprof in production exposes sensitive runtime information and can impact performance.
+</Warning>
+
+## Endpoint
+
+```
+GET /debug/pprof/*
+```
+
+## Configuration
+
+Enable pprof endpoints:
+
+```bash
+ENABLE_PPROF=true
+```
+
+In Docker:
+
+```bash
+docker run -e ENABLE_PPROF=true -e RIOT_TOKEN=your-token renjag/riftrelay:latest
+```
+
+<Warning>
+  **Security Risk**: pprof endpoints expose internal application state, memory contents, and can be used to trigger CPU-intensive profiling. Never enable in production unless you implement proper authentication and access controls.
+</Warning>
+
+## Available Endpoints
+
+### Index
+
+```
+GET /debug/pprof/
+```
+
+HTML index page listing all available profiles.
+
+Source: `internal/app/server.go:66`
+
+### Heap Profile
+
+```
+GET /debug/pprof/heap
+```
+
+Memory allocation profile showing:
+- Current heap allocations
+- Memory usage by allocation site
+- Allocated vs. in-use memory
+
+### Goroutine Profile
+
+```
+GET /debug/pprof/goroutine
+```
+
+Stack traces of all current goroutines. Useful for:
+- Detecting goroutine leaks
+- Understanding concurrency patterns
+- Debugging deadlocks
+
+### CPU Profile
+
+```
+GET /debug/pprof/profile?seconds=30
+```
+
+CPU profile captured over a specified duration (default: 30 seconds).
+
+**Query Parameters**:
+- `seconds` - Duration to capture profile (default: 30)
+
+Source: `internal/app/server.go:68`
+
+<Note>
+  CPU profiling has performance overhead. Use short durations and avoid running in production.
+</Note>
+
+### Thread Creation Profile
+
+```
+GET /debug/pprof/threadcreate
+```
+
+Stack traces that led to creation of new OS threads.
+
+### Block Profile
+
+```
+GET /debug/pprof/block
+```
+
+Stack traces that led to blocking on synchronization primitives (mutexes, channels).
+
+### Mutex Profile
+
+```
+GET /debug/pprof/mutex
+```
+
+Stack traces of holders of contended mutexes.
+
+### Allocation Profile
+
+```
+GET /debug/pprof/allocs
+```
+
+Sampling of all past memory allocations (similar to heap but includes freed objects).
+
+### Command Line
+
+```
+GET /debug/pprof/cmdline
+```
+
+The command line invocation of the current program.
+
+Source: `internal/app/server.go:67`
+
+### Symbol Lookup
+
+```
+GET /debug/pprof/symbol
+```
+
+Looks up program counters and returns function names.
+
+Source: `internal/app/server.go:69`
+
+### Execution Trace
+
+```
+GET /debug/pprof/trace?seconds=5
+```
+
+Execution trace captured over a specified duration.
+
+**Query Parameters**:
+- `seconds` - Duration to capture trace (default: 5)
+
+Source: `internal/app/server.go:70`
+
+## Usage with go tool pprof
+
+### Interactive Analysis
+
+Analyze heap usage interactively:
+
+```bash
+go tool pprof http://localhost:8985/debug/pprof/heap
+```
+
+**Commands**:
+```
+(pprof) top10          # Show top 10 memory consumers
+(pprof) list functionName  # Show source code with annotations
+(pprof) web            # Open visualization in browser
+(pprof) pdf > heap.pdf # Generate PDF report
+```
+
+### CPU Profile Analysis
+
+Capture and analyze 30-second CPU profile:
+
+```bash
+go tool pprof http://localhost:8985/debug/pprof/profile?seconds=30
+```
+
+**Wait 30 seconds for capture to complete**, then:
+
+```
+(pprof) top10          # Show top CPU consumers
+(pprof) list functionName  # Show source with CPU samples
+(pprof) web            # Visualize call graph
+```
+
+### Goroutine Analysis
+
+Detect goroutine leaks:
+
+```bash
+go tool pprof http://localhost:8985/debug/pprof/goroutine
+```
+
+```
+(pprof) top           # Show goroutine counts by creation site
+(pprof) traces        # Show full goroutine stack traces
+```
+
+### Compare Profiles
+
+Detect memory leaks by comparing heap snapshots:
+
+```bash
+# Capture initial heap
+curl http://localhost:8985/debug/pprof/heap > heap1.prof
+
+# Wait and capture again
+sleep 60
+curl http://localhost:8985/debug/pprof/heap > heap2.prof
+
+# Compare
+go tool pprof -base heap1.prof heap2.prof
+```
+
+### Flamegraph Visualization
+
+Generate flamegraph from CPU profile:
+
+```bash
+go tool pprof -http=:8080 http://localhost:8985/debug/pprof/profile?seconds=30
+```
+
+This opens an interactive web UI at `http://localhost:8080` with:
+- Flamegraph visualization
+- Top functions
+- Source code view
+- Call graph
+
+## Common Use Cases
+
+### Detecting Memory Leaks
+
+1. **Capture baseline**:
+   ```bash
+   curl http://localhost:8985/debug/pprof/heap > baseline.prof
+   ```
+
+2. **Generate load** (run your application normally)
+
+3. **Capture after load**:
+   ```bash
+   curl http://localhost:8985/debug/pprof/heap > after-load.prof
+   ```
+
+4. **Compare**:
+   ```bash
+   go tool pprof -base baseline.prof after-load.prof
+   ```
+
+5. **Find leaks**:
+   ```
+   (pprof) top
+   (pprof) list suspiciousFunction
+   ```
+
+### Identifying CPU Hotspots
+
+1. **Generate traffic** to RiftRelay
+
+2. **Capture profile**:
+   ```bash
+   go tool pprof -http=:8080 http://localhost:8985/debug/pprof/profile?seconds=30
+   ```
+
+3. **Analyze flamegraph** to identify bottlenecks
+
+### Debugging Goroutine Leaks
+
+1. **Check goroutine count** before and after operations:
+   ```bash
+   curl -s http://localhost:8985/debug/pprof/goroutine?debug=2 | grep "^goroutine" | wc -l
+   ```
+
+2. **Identify leak sources**:
+   ```bash
+   go tool pprof http://localhost:8985/debug/pprof/goroutine
+   ```
+
+3. **View stack traces**:
+   ```
+   (pprof) top
+   (pprof) traces
+   ```
+
+### Analyzing Lock Contention
+
+1. **Enable mutex profiling** (requires code modification or runtime flag)
+
+2. **Capture mutex profile**:
+   ```bash
+   go tool pprof http://localhost:8985/debug/pprof/mutex
+   ```
+
+3. **Find contention points**:
+   ```
+   (pprof) top
+   (pprof) list contentedFunction
+   ```
+
+## Implementation Details
+
+Pprof endpoints are registered conditionally during server initialization:
+
+```go
+if cfg.PprofEnabled {
+    mux.HandleFunc("/debug/pprof/", pprof.Index)
+    mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+    mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+    mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+    mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+}
+```
+
+Source: `internal/app/server.go:65-71`
+
+These handlers are provided by Go's standard library `net/http/pprof` package.
+
+Source: `internal/app/server.go:9`
+
+## Security Considerations
+
+<Warning>
+  **Do not enable pprof in production** without implementing the following security measures:
+</Warning>
+
+### 1. Reverse Proxy Authentication
+
+Restrict pprof endpoints using NGINX:
+
+```nginx
+location /debug/pprof/ {
+    auth_basic "Restricted";
+    auth_basic_user_file /etc/nginx/.htpasswd;
+    proxy_pass http://riftrelay:8985;
+}
+```
+
+### 2. Firewall Rules
+
+Block external access using iptables:
+
+```bash
+# Allow localhost only
+iptables -A INPUT -p tcp --dport 8985 -s 127.0.0.1 -j ACCEPT
+iptables -A INPUT -p tcp --dport 8985 -j DROP
+```
+
+### 3. Network Policies
+
+Kubernetes NetworkPolicy example:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: riftrelay-pprof-policy
+spec:
+  podSelector:
+    matchLabels:
+      app: riftrelay
+  policyTypes:
+  - Ingress
+  ingress:
+  # Allow pprof only from debug pod
+  - from:
+    - podSelector:
+        matchLabels:
+          role: debug
+    ports:
+    - protocol: TCP
+      port: 8985
+```
+
+### 4. Separate Debug Port
+
+For production debugging, consider running pprof on a separate port that's not exposed externally.
+
+## Examples
+
+### Quick Heap Check
+
+View current heap usage in browser:
+
+```
+http://localhost:8985/debug/pprof/heap
+```
+
+### Text-based Goroutine Dump
+
+```bash
+curl "http://localhost:8985/debug/pprof/goroutine?debug=2"
+```
+
+### 10-Second CPU Profile
+
+```bash
+curl "http://localhost:8985/debug/pprof/profile?seconds=10" > cpu.prof
+go tool pprof cpu.prof
+```
+
+### Goroutine Count
+
+```bash
+curl -s "http://localhost:8985/debug/pprof/goroutine?debug=2" | grep "^goroutine" | wc -l
+```
+
+### Execution Trace
+
+Capture 5-second execution trace:
+
+```bash
+curl "http://localhost:8985/debug/pprof/trace?seconds=5" > trace.out
+go tool trace trace.out
+```
+
+## Related Documentation
+
+### External Resources
+
+- [Go pprof Documentation](https://pkg.go.dev/net/http/pprof)
+- [Profiling Go Programs](https://go.dev/blog/pprof)
+- [Go Execution Tracer](https://go.dev/doc/diagnostics#execution-tracer)
+
+### Related Endpoints
+
+- [Metrics](/api/metrics) - Prometheus metrics for production monitoring
+- [Health Check](/api/health-check) - Service availability
+- [Proxy Endpoint](/api/proxy-endpoint) - Main API interface

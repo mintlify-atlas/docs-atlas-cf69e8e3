@@ -1,0 +1,357 @@
+---
+title: 'Swagger UI'
+description: 'Interactive API explorer for the Riot Games API through RiftRelay'
+---
+
+## Overview
+
+RiftRelay includes a built-in Swagger UI that provides an interactive interface for exploring and testing Riot Games API endpoints. The Swagger UI automatically fetches the latest Riot API OpenAPI specification and adapts it to work through RiftRelay.
+
+<Note>
+  Swagger UI is **enabled by default**. Disable it by setting `ENABLE_SWAGGER=false`.
+</Note>
+
+## Endpoint
+
+```
+GET /swagger/
+```
+
+Alternatively:
+```
+GET /swagger/index.html
+```
+
+## Configuration
+
+### Enable/Disable
+
+Swagger UI is enabled by default. To disable:
+
+```bash
+ENABLE_SWAGGER=false
+```
+
+### Docker Usage
+
+The Swagger UI is available immediately when running RiftRelay:
+
+```bash
+docker run -p 8985:8985 -e RIOT_TOKEN=your-token renjag/riftrelay:latest
+```
+
+Access at: `http://localhost:8985/swagger/`
+
+## Features
+
+### Automatic Region Selection
+
+The Swagger UI rewrites the OpenAPI spec servers to use RiftRelay's URL format with a region selector:
+
+```
+http://localhost:8985/{region}
+```
+
+Available regions are populated from the Riot API OpenAPI spec and include:
+- `na1`, `euw1`, `euw2`, `kr`, `br1`, `la1`, `la2`, `oc1`, `ru`, `tr1`, `jp1` (Regional)
+- `americas`, `europe`, `asia`, `sea` (Continental)
+
+Source: `internal/swagger/handler.go:95-119`
+
+### X-Priority Header Injection
+
+The Swagger UI automatically adds the `X-Priority` header parameter to all API operations, allowing you to test high-priority requests directly from the interface.
+
+**Parameter**:
+- **Name**: `X-Priority`
+- **Location**: Header
+- **Type**: String
+- **Enum**: `["high"]`
+- **Required**: No
+- **Description**: "Request priority hint. Use high to bypass pacing delay while still respecting rate limits."
+
+Source: `internal/swagger/handler.go:216-227`
+
+### Security Removal
+
+RiftRelay automatically strips authentication requirements from the OpenAPI spec since the `X-Riot-Token` is injected server-side. You don't need to provide API keys in the Swagger UI.
+
+Source: `internal/swagger/handler.go:121-154`
+
+### Simplified Documentation
+
+The info description is rewritten to reference RiftRelay and the upstream OpenAPI spec source:
+
+```
+Riot Games API documentation proxied through RiftRelay.
+
+This OpenAPI specification is based on riotapi-schema, 
+automatically generated daily from the Riot Games API Reference.
+```
+
+Source: `internal/swagger/handler.go:229-236`
+
+## OpenAPI Spec Endpoint
+
+The processed OpenAPI specification is available at:
+
+```
+GET /swagger/openapi.json
+```
+
+This endpoint:
+1. Fetches the upstream Riot API OpenAPI spec from:
+   ```
+   https://www.mingweisamuel.com/riotapi-schema/openapi-3.0.0.min.json
+   ```
+2. Rewrites the servers to use RiftRelay's URL format
+3. Strips security schemes
+4. Adds the `X-Priority` header parameter
+5. Simplifies the info description
+
+Source: `internal/swagger/handler.go:56-93`
+
+## Usage Examples
+
+### Accessing the UI
+
+Navigate to the Swagger UI in your browser:
+
+```
+http://localhost:8985/swagger/
+```
+
+### Testing an Endpoint
+
+1. **Select Region**: Choose your region from the dropdown (e.g., `na1`)
+2. **Find Endpoint**: Browse or search for the endpoint (e.g., `GET /lol/summoner/v4/summoners/by-name/{summonerName}`)
+3. **Try It Out**: Click "Try it out"
+4. **Enter Parameters**: Fill in required parameters (e.g., `summonerName: Doublelift`)
+5. **(Optional) Set Priority**: Add `high` to the `X-Priority` header field
+6. **Execute**: Click "Execute"
+7. **View Response**: See the actual response from Riot API
+
+### Example Request
+
+When you execute a request through Swagger UI for:
+```
+GET /lol/summoner/v4/summoners/by-name/Doublelift
+```
+
+With region `na1`, Swagger UI sends:
+```
+GET http://localhost:8985/na1/lol/summoner/v4/summoners/by-name/Doublelift
+```
+
+### High Priority Request
+
+To bypass pacing delays:
+
+1. Expand the `X-Priority` header parameter
+2. Select `high` from the dropdown
+3. Execute the request
+
+The request will be sent with:
+```
+X-Priority: high
+```
+
+## Advanced Configuration
+
+### Custom OpenAPI Spec URL
+
+While not configurable via environment variables, you can modify the spec URL in the source:
+
+```go
+const defaultSpecURL = "https://your-custom-spec-url.com/openapi.json"
+```
+
+Source: `internal/swagger/handler.go:12`
+
+### Proxy Behind Reverse Proxy
+
+If RiftRelay is behind a reverse proxy, the Swagger UI automatically detects the correct scheme (http/https) from the `X-Forwarded-Proto` header:
+
+```go
+func requestScheme(r *http.Request) string {
+    if forwardedProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+        return forwardedProto
+    }
+    if r.TLS != nil {
+        return "https"
+    }
+    return "http"
+}
+```
+
+Source: `internal/swagger/handler.go:273-287`
+
+## Implementation Details
+
+### Swagger UI HTML
+
+RiftRelay serves a lightweight HTML page that loads Swagger UI from CDN:
+
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RiftRelay Swagger UI</title>
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-standalone-preset.js"></script>
+    <script>
+      window.onload = function() {
+        SwaggerUIBundle({
+          url: "/swagger/openapi.json",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+          layout: "StandaloneLayout"
+        });
+      };
+    </script>
+  </body>
+</html>
+```
+
+Source: `internal/swagger/handler.go:302-327`
+
+### Route Registration
+
+The Swagger handler is registered during server initialization:
+
+```go
+if cfg.SwaggerEnabled {
+    mux.Handle("/swagger/", swagger.NewHandler())
+}
+```
+
+Source: `internal/app/server.go:72-74`
+
+### OpenAPI Spec Processing Flow
+
+1. **Fetch Upstream Spec**: HTTP GET to Riot API OpenAPI schema
+2. **Parse JSON**: Decode into `map[string]any`
+3. **Rewrite Servers**: Replace with RiftRelay URL format
+4. **Strip Security**: Remove authentication requirements
+5. **Add Priority Header**: Inject `X-Priority` parameter into all operations
+6. **Simplify Description**: Update info section
+7. **Encode Response**: Return modified spec as JSON
+
+Source: `internal/swagger/handler.go:56-93`
+
+## Troubleshooting
+
+### Swagger UI Not Loading
+
+**Check if enabled**:
+```bash
+echo $ENABLE_SWAGGER  # Should be empty or "true"
+```
+
+**Verify server logs**:
+```
+RiftRelay listening on http://localhost:8985
+Swagger UI available at http://localhost:8985/swagger/
+```
+
+Source: `internal/app/server.go:98-100`
+
+### OpenAPI Spec Fetch Failed
+
+**Error**: "cannot load swagger spec upstream"
+
+**Causes**:
+- Network connectivity issues
+- Upstream spec URL unreachable
+- Request timeout (15 seconds)
+
+**Debug**:
+```bash
+curl -v http://localhost:8985/swagger/openapi.json
+```
+
+### Requests Failing in Swagger UI
+
+**Error**: 400 Bad Request
+
+**Common Causes**:
+- Wrong region selected
+- Missing required parameters
+- Invalid parameter format
+
+**Check**: Verify the full URL being sent matches `/{region}/{api-path}` format
+
+## Examples
+
+### Fetch OpenAPI Spec
+
+```bash
+curl http://localhost:8985/swagger/openapi.json | jq '.'
+```
+
+### Check Servers Configuration
+
+Extract the servers section from the processed spec:
+
+```bash
+curl -s http://localhost:8985/swagger/openapi.json | \
+    jq '.servers'
+```
+
+**Output**:
+```json
+[
+  {
+    "url": "http://localhost:8985/{region}",
+    "variables": {
+      "region": {
+        "default": "na1",
+        "enum": [
+          "na1",
+          "euw1",
+          "kr",
+          "americas",
+          "europe",
+          "asia"
+        ]
+      }
+    }
+  }
+]
+```
+
+### Verify X-Priority Parameter
+
+Check if `X-Priority` header is added to endpoints:
+
+```bash
+curl -s http://localhost:8985/swagger/openapi.json | \
+    jq '.paths["/lol/summoner/v4/summoners/by-name/{summonerName}"].get.parameters[] | select(.name == "X-Priority")'
+```
+
+**Output**:
+```json
+{
+  "name": "X-Priority",
+  "in": "header",
+  "description": "Request priority hint. Use high to bypass pacing delay while still respecting rate limits.",
+  "required": false,
+  "schema": {
+    "type": "string",
+    "enum": ["high"]
+  }
+}
+```
+
+## Related Endpoints
+
+- [Proxy Endpoint](/api/proxy-endpoint) - Main API proxy interface
+- [Health Check](/api/health-check) - Service availability check
+- [Metrics](/api/metrics) - Operational metrics

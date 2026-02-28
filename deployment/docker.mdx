@@ -1,0 +1,307 @@
+---
+title: 'Docker Deployment'
+description: 'Deploy RiftRelay using Docker for quick and reliable setup'
+icon: 'docker'
+---
+
+The recommended way to deploy RiftRelay is using Docker. Pre-built images are available on [Docker Hub](https://hub.docker.com/r/renjag/riftrelay).
+
+## Quick Start
+
+<Steps>
+  <Step title="Pull the image">
+    ```bash
+    docker pull renjag/riftrelay:latest
+    ```
+  </Step>
+
+  <Step title="Run the container">
+    ```bash
+    docker run -d \
+      --name riftrelay \
+      -p 8985:8985 \
+      -e RIOT_TOKEN="your-riot-token" \
+      renjag/riftrelay:latest
+    ```
+  </Step>
+
+  <Step title="Verify it's running">
+    ```bash
+    curl http://localhost:8985/healthz
+    ```
+  </Step>
+</Steps>
+
+## Configuration
+
+### Environment Variables
+
+Pass environment variables using the `-e` flag:
+
+<CodeGroup>
+```bash Basic
+docker run -d \
+  --name riftrelay \
+  -p 8985:8985 \
+  -e RIOT_TOKEN="your-riot-token" \
+  renjag/riftrelay:latest
+```
+
+```bash Multiple Tokens
+docker run -d \
+  --name riftrelay \
+  -p 8985:8985 \
+  -e RIOT_TOKEN="token1,token2,token3" \
+  renjag/riftrelay:latest
+```
+
+```bash Full Configuration
+docker run -d \
+  --name riftrelay \
+  -p 8985:8985 \
+  -e RIOT_TOKEN="your-riot-token" \
+  -e PORT="8985" \
+  -e QUEUE_CAPACITY="2048" \
+  -e ADMISSION_TIMEOUT="5m" \
+  -e SHUTDOWN_TIMEOUT="20s" \
+  -e ENABLE_METRICS="true" \
+  -e ENABLE_PPROF="false" \
+  -e ENABLE_SWAGGER="true" \
+  renjag/riftrelay:latest
+```
+
+```bash Using .env file
+docker run -d \
+  --name riftrelay \
+  -p 8985:8985 \
+  --env-file .env \
+  renjag/riftrelay:latest
+```
+</CodeGroup>
+
+<Note>
+  The `RIOT_TOKEN` environment variable is required. All other configuration options have sensible defaults.
+</Note>
+
+### Port Mapping
+
+The default port is `8985`. Map it to a different host port if needed:
+
+```bash
+# Map to port 3000 on host
+docker run -d -p 3000:8985 -e RIOT_TOKEN="your-token" renjag/riftrelay:latest
+```
+
+### Health Checks
+
+The Docker image includes a built-in health check that runs every 15 seconds:
+
+```dockerfile
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+  CMD wget --spider -q "http://127.0.0.1:${PORT:-8985}/healthz" || exit 1
+```
+
+Check container health:
+
+```bash
+docker ps
+```
+
+The `STATUS` column will show `healthy` or `unhealthy`.
+
+## Dockerfile Breakdown
+
+<Info>
+  Understanding the Dockerfile helps you customize builds and troubleshoot issues.
+</Info>
+
+### Multi-Stage Build
+
+The Dockerfile uses a multi-stage build for optimal image size and security:
+
+<CodeGroup>
+```dockerfile Builder Stage
+# syntax=docker/dockerfile:1.7
+
+ARG GO_VERSION=1.26.0
+
+FROM golang:${GO_VERSION}-alpine AS builder
+WORKDIR /src
+
+ARG TARGETOS=linux
+ARG TARGETARCH
+
+COPY go.mod ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+	--mount=type=cache,target=/root/.cache/go-build \
+	CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+	go build -trimpath -ldflags="-s -w -buildid=" -o /out/riftrelay .
+```
+
+```dockerfile Runtime Stage
+FROM alpine:3.23
+
+RUN apk add --no-cache ca-certificates tzdata wget
+RUN addgroup -S app && adduser -S -G app -h /nonexistent -s /sbin/nologin app
+
+WORKDIR /app
+COPY --from=builder /out/riftrelay /usr/local/bin/riftrelay
+
+USER app:app
+
+ENV PORT=8985
+EXPOSE 8985
+
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+	CMD wget --spider -q "http://127.0.0.1:${PORT:-8985}/healthz" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/riftrelay"]
+```
+</CodeGroup>
+
+### Security Features
+
+- **Non-root user**: Runs as dedicated `app` user with no login shell
+- **Minimal base**: Uses Alpine Linux for reduced attack surface
+- **Static binary**: CGO disabled for better portability and security
+- **Stripped binary**: `-ldflags="-s -w"` removes debug info to reduce size
+
+<Warning>
+  The container runs as a non-root user. Ensure any volume mounts have appropriate permissions.
+</Warning>
+
+### Build Optimizations
+
+- **Build cache**: Uses Docker BuildKit cache mounts for faster rebuilds
+- **Layer caching**: Dependencies downloaded separately for better cache reuse
+- **Trimmed paths**: `-trimpath` flag ensures reproducible builds
+- **Small size**: Final image is ~20MB
+
+## Production Usage
+
+### Restart Policies
+
+```bash
+docker run -d \
+  --name riftrelay \
+  --restart unless-stopped \
+  -p 8985:8985 \
+  -e RIOT_TOKEN="your-token" \
+  renjag/riftrelay:latest
+```
+
+### Resource Limits
+
+```bash
+docker run -d \
+  --name riftrelay \
+  --restart unless-stopped \
+  --memory="512m" \
+  --cpus="1.0" \
+  -p 8985:8985 \
+  -e RIOT_TOKEN="your-token" \
+  renjag/riftrelay:latest
+```
+
+### Logging
+
+View container logs:
+
+```bash
+# Follow logs
+docker logs -f riftrelay
+
+# Last 100 lines
+docker logs --tail 100 riftrelay
+
+# With timestamps
+docker logs -t riftrelay
+```
+
+<Tip>
+  For production deployments, consider using Docker Compose for easier configuration management. See [Docker Compose Deployment](/deployment/docker-compose).
+</Tip>
+
+## Container Management
+
+### Starting and Stopping
+
+```bash
+# Stop container
+docker stop riftrelay
+
+# Start container
+docker start riftrelay
+
+# Restart container
+docker restart riftrelay
+
+# Remove container
+docker rm -f riftrelay
+```
+
+### Updating
+
+<Steps>
+  <Step title="Pull latest image">
+    ```bash
+    docker pull renjag/riftrelay:latest
+    ```
+  </Step>
+
+  <Step title="Stop and remove old container">
+    ```bash
+    docker stop riftrelay
+    docker rm riftrelay
+    ```
+  </Step>
+
+  <Step title="Start new container">
+    ```bash
+    docker run -d \
+      --name riftrelay \
+      --restart unless-stopped \
+      -p 8985:8985 \
+      -e RIOT_TOKEN="your-token" \
+      renjag/riftrelay:latest
+    ```
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Container won't start
+
+Check logs for errors:
+
+```bash
+docker logs riftrelay
+```
+
+Common issues:
+- Missing `RIOT_TOKEN` environment variable
+- Port 8985 already in use on host
+- Insufficient permissions
+
+### Health check failing
+
+Inspect health check status:
+
+```bash
+docker inspect --format='{{json .State.Health}}' riftrelay | jq
+```
+
+### Port binding issues
+
+Check if port is already in use:
+
+```bash
+# Linux/macOS
+lsof -i :8985
+
+# Or use a different port
+docker run -d -p 9000:8985 -e RIOT_TOKEN="your-token" renjag/riftrelay:latest
+```

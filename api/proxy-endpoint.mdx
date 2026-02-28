@@ -1,0 +1,243 @@
+---
+title: 'Proxy Endpoint'
+description: 'Forward requests to the Riot Games API through RiftRelay'
+---
+
+## Overview
+
+The proxy endpoint is the primary interface for making API requests to Riot Games through RiftRelay. All Riot API requests are routed through this endpoint using the format `/{region}/{riot-api-path}`.
+
+RiftRelay automatically manages rate limits, spreads requests evenly across the rate limit window, and forwards responses from the Riot API.
+
+## Endpoint
+
+```
+ALL /{region}/{path}
+```
+
+**Methods**: GET, POST, PUT, DELETE, PATCH, and all other HTTP methods supported by the Riot API
+
+## Path Parameters
+
+<ParamField path="region" type="string" required>
+  The Riot API platform/region identifier (e.g., `na1`, `europe`, `americas`, `asia`)
+  
+  Must match the pattern `[a-z0-9-]+`
+  
+  Examples:
+  - `na1`, `euw1`, `kr` - Regional endpoints
+  - `europe`, `americas`, `asia` - Continental endpoints
+</ParamField>
+
+<ParamField path="path" type="string" required>
+  The Riot API endpoint path without the region prefix
+  
+  Format: `/riot/...` or `/lol/...` depending on the API
+  
+  Examples:
+  - `riot/account/v1/accounts/by-riot-id/{gameName}/{tagLine}`
+  - `lol/summoner/v4/summoners/by-name/{summonerName}`
+  - `lol/match/v5/matches/{matchId}`
+</ParamField>
+
+## Request Headers
+
+<ParamField header="X-Priority" type="string">
+  Request priority hint to control pacing behavior
+  
+  **Values**:
+  - `high` - Bypass pacing delay while still respecting rate limits
+  - (omitted) - Normal priority with pacing delay
+  
+  <Note>
+    High priority requests skip the pacing queue but still count against rate limits. Use this for time-sensitive requests like live game data.
+  </Note>
+</ParamField>
+
+## Authentication
+
+No authentication headers are required in your request. RiftRelay automatically injects the `X-Riot-Token` header configured via the `RIOT_TOKEN` environment variable.
+
+When multiple tokens are configured, RiftRelay distributes requests across them automatically.
+
+## Response
+
+The response is proxied directly from the Riot API, including:
+- Status code from upstream
+- Response body (JSON)
+- Response headers
+
+### Success Response
+
+```json
+{
+  "puuid": "abc123...",
+  "gameName": "Someone",
+  "tagLine": "EUW1"
+}
+```
+
+## Error Responses
+
+### 400 Bad Request
+
+Returned when the path format is invalid.
+
+```
+expected path /{region}/riot/...
+```
+
+**Causes**:
+- Missing region or path
+- Invalid region format (must be lowercase alphanumeric with hyphens)
+- Empty upstream path
+
+### 429 Too Many Requests
+
+Returned when the request queue is full or rate limits are exhausted.
+
+<ResponseField name="Retry-After" type="string">
+  Number of seconds to wait before retrying (in seconds)
+</ResponseField>
+
+```
+request rejected by admission control
+```
+
+**Causes**:
+- Queue capacity exceeded (`QUEUE_CAPACITY` reached)
+- Admission timeout exceeded (request waited longer than `ADMISSION_TIMEOUT`)
+- Rate limits exhausted with no available capacity
+
+<Warning>
+  When you receive a 429 response, respect the `Retry-After` header to avoid overwhelming the proxy.
+</Warning>
+
+### 502 Bad Gateway
+
+Returned when RiftRelay cannot reach the Riot API.
+
+```
+upstream unavailable
+```
+
+**Causes**:
+- Network connectivity issues
+- Upstream timeout
+- Riot API unavailable
+
+### Riot API Errors
+
+All other error responses (400, 401, 403, 404, 500, etc.) are forwarded directly from the Riot API with their original status codes and error messages.
+
+## Examples
+
+### Basic Request
+
+Fetch account information by Riot ID:
+
+<CodeGroup>
+```bash cURL
+curl "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+```
+
+```python Python
+import requests
+
+response = requests.get(
+    "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+)
+print(response.json())
+```
+
+```javascript JavaScript
+const response = await fetch(
+  'http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1'
+);
+const data = await response.json();
+console.log(data);
+```
+</CodeGroup>
+
+### High Priority Request
+
+Bypass pacing delay for time-sensitive requests:
+
+<CodeGroup>
+```bash cURL
+curl -H "X-Priority: high" \
+  "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1"
+```
+
+```python Python
+import requests
+
+response = requests.get(
+    "http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1",
+    headers={"X-Priority": "high"}
+)
+print(response.json())
+```
+
+```javascript JavaScript
+const response = await fetch(
+  'http://localhost:8985/europe/riot/account/v1/accounts/by-riot-id/Someone/EUW1',
+  { headers: { 'X-Priority': 'high' } }
+);
+const data = await response.json();
+console.log(data);
+```
+</CodeGroup>
+
+### Match History
+
+Fetch match details:
+
+```bash
+curl "http://localhost:8985/americas/lol/match/v5/matches/NA1_4567890123"
+```
+
+### Summoner Lookup
+
+Get summoner information by name:
+
+```bash
+curl "http://localhost:8985/na1/lol/summoner/v4/summoners/by-name/DoubleLift"
+```
+
+## Implementation Details
+
+### Path Processing
+
+RiftRelay parses incoming paths to extract:
+1. **Region**: First segment after the initial `/`
+2. **Upstream Path**: Remaining path segments
+3. **Bucket**: Combination of region and path pattern for rate limit grouping
+
+Path patterns with variables (e.g., `{summonerId}`) are matched to canonical patterns for rate limit bucketing.
+
+Source: `internal/router/path.go:35`
+
+### Rate Limit Bucketing
+
+Requests are grouped into buckets based on:
+- Region (e.g., `na1`, `europe`)
+- API endpoint pattern (e.g., `/lol/summoner/v4/summoners/by-name/{summonerName}`)
+
+This ensures different endpoints and regions maintain separate rate limit quotas.
+
+Source: `internal/router/path.go:63-67`
+
+### Request Flow
+
+1. **Path Validation**: Verify region and path format (`internal/router/path.go:142-148`)
+2. **Admission Control**: Queue request and wait for rate limit availability (`internal/proxy/admission.go:63-82`)
+3. **Proxy Rewrite**: Rewrite URL to target Riot API (`internal/proxy/proxy.go:85-111`)
+4. **Rate Limit Update**: Observe response headers and update rate limit state (`internal/proxy/proxy.go:127-133`)
+5. **Response Forward**: Return Riot API response to client
+
+## Related Endpoints
+
+- [Health Check](/api/health-check) - Check proxy availability
+- [Metrics](/api/metrics) - Monitor request statistics
+- [Swagger UI](/api/swagger-ui) - Interactive API explorer
