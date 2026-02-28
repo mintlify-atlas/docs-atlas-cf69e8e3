@@ -1,0 +1,90 @@
+{
+  "projectType": "api-service",
+  "projectName": "RiftRelay",
+  "projectDescription": "A rate-limiting proxy for the Riot Games API built in Go with integrated Swagger UI.",
+  "theme": "aspen",
+  "primaryColor": "#5865F2",
+  "lightColor": "#7289DA",
+  "darkColor": "#4752C4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/usage",
+              "guides/configuration",
+              "guides/priority-requests",
+              "guides/multiple-tokens"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/rate-limiting",
+              "architecture/queue-system"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/docker",
+              "deployment/docker-compose",
+              "deployment/from-source"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/proxy-endpoint",
+              "api/health-check",
+              "api/metrics",
+              "api/swagger-ui",
+              "api/profiling"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "api/environment-variables"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Intelligent rate limiting with request scheduling",
+    "Multi-token support for load balancing",
+    "Priority request handling",
+    "Integrated Swagger UI",
+    "Queue-based admission control",
+    "Prometheus metrics",
+    "Graceful shutdown",
+    "Docker deployment ready"
+  ],
+  "publicApiSurface": [
+    "GET /{region}/{path} - Main proxy endpoint",
+    "GET /healthz - Health check endpoint",
+    "GET /metrics - Prometheus metrics (optional)",
+    "GET /swagger/ - Swagger UI (optional)",
+    "GET /debug/pprof/* - Profiling endpoints (optional)",
+    "X-Priority: high - Priority request header"
+  ]
+}
